@@ -147,7 +147,7 @@ fn main() -> Result<()> {
                     thumbnail_path.display()
                 );
 
-                let image = ImageReader::open(file_path)
+                let image = match ImageReader::open(file_path)
                     .map_err(|e| {
                         af!(
                             "couldn't read file for thumbnailing: {}: {}",
@@ -156,7 +156,13 @@ fn main() -> Result<()> {
                         )
                     })?
                     .decode()
-                    .map_err(|e| af!("couldn't decode file: {}: {}", file_path.display(), e))?;
+                {
+                    Ok(image) => image,
+                    Err(err) => {
+                        tracing::warn!("couldn't make thumbnail: {}", err);
+                        continue;
+                    }
+                };
 
                 let nw = config.thumbnail_size;
                 let nh = (config.thumbnail_size as f32
