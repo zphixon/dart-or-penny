@@ -1,3 +1,4 @@
+bind = 'localhost:8888'
 page_root = '/files'
 thumbnail_dir = 'eg/.dop'
 file_dir = 'eg'

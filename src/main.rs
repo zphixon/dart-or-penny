@@ -443,6 +443,7 @@ impl Database {
 
 #[derive(Debug)]
 struct Config {
+    bind: String,
     auth: Option<String>,
     thumbnail_dir: String,
     file_dir: String,
@@ -506,7 +507,15 @@ impl Config {
             })
             .transpose()?;
 
+        let bind = toml
+            .get("bind")
+            .ok_or_else(|| af!("need bind in config file {}", config_path))?
+            .as_str()
+            .ok_or_else(|| af!("bind must be string in config file {}", config_path))?
+            .to_string();
+
         Ok(Config {
+            bind,
             auth,
             thumbnail_dir,
             file_dir,
@@ -534,7 +543,7 @@ fn main() -> Result<()> {
     config.rebuild_thumbnails = Some("--rebuild-thumbnails") == args.get(2).map(|s| &**s);
     database.index_and_build_thumbnail_db(&config)?;
 
-    rouille::start_server("localhost:8888", move |request| {
+    rouille::start_server(config.bind.clone(), move |request| {
         let remote = request
             .header("X-Real-IP")
             .map(String::from)
