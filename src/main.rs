@@ -301,7 +301,7 @@ impl Database {
                 .to_string();
             if is_dir {
                 page += &format!(
-                    "<a href={}/{}>{}</a>",
+                    "<a href='{}/{}'>{}</a>",
                     config.page_root.as_ref().map(|s| s.as_str()).unwrap_or("/"),
                     path.strip_prefix(&self.file_dir)
                         .map_err(|e| af!("couldn't strip prefix of {}: {}", path.display(), e))?
@@ -641,7 +641,7 @@ fn main() -> Result<()> {
                 if let Some(content) = maybe_content {
                     let full_link = |path: &Path| {
                         format!(
-                            "<a href={}/{}>{}</a>",
+                            "<a href='{}/{}'>{}</a>",
                             config.page_root.as_ref().map(|s| s.as_str()).unwrap_or(""),
                             path.strip_prefix(&database.file_dir).unwrap().display(),
                             path.display()
@@ -649,7 +649,7 @@ fn main() -> Result<()> {
                     };
                     let filename_link = |path: &Path| {
                         format!(
-                            "<a href={}/{}>{}</a>",
+                            "<a href='{}/{}'>{}</a>",
                             config.page_root.as_ref().map(|s| s.as_str()).unwrap_or(""),
                             path.strip_prefix(&database.file_dir).unwrap().display(),
                             path.file_name()
@@ -683,7 +683,10 @@ fn main() -> Result<()> {
         } else {
             Page::default()
                 .with_title("todo")
-                .with_paragraph("you're trying to download a file, this isn't implemented yet.")
+                .with_paragraph(format!(
+                    "you're trying to download a file, this isn't implemented yet.</p><p>{}",
+                    path.display()
+                ))
                 .render(&config)
         }
     });
