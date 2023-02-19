@@ -4,4 +4,4 @@ thumbnail_dir = 'eg/.dop'
 file_dir = 'eg'
 thumbnail_size = 75
 
-auth = 'zack:idk'
+#auth = 'zack:idk'

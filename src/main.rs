@@ -20,12 +20,20 @@ macro_rules! af {
 
 #[derive(Default)]
 struct Page {
+    tab_title: String,
     title: String,
     content: String,
     code: Option<u16>,
 }
 
 impl Page {
+    fn with_tab_title<S: ToString>(self, tab_title: S) -> Self {
+        Page {
+            tab_title: tab_title.to_string(),
+            ..self
+        }
+    }
+
     fn with_title<S: ToString>(self, title: S) -> Self {
         Page {
             title: title.to_string(),
@@ -88,7 +96,7 @@ impl Page {
   </body>
 </html>
 "#,
-            title, config.thumbnail_size, title, self.content
+            self.tab_title, config.thumbnail_size, title, self.content
         ))
         .with_status_code(self.code.unwrap_or(200))
     }
@@ -218,6 +226,7 @@ fn build_thumbnail_db(files: &[File], thumbnail_dir: &Path) -> Result<HashMap<Pa
 #[derive(Debug)]
 struct Database {
     file_dir: PathBuf,
+    #[allow(dead_code)]
     files: Vec<File>,
     thumbnail_dir: PathBuf,
     thumbnails: HashMap<PathBuf, PathBuf>,
@@ -244,36 +253,99 @@ impl Database {
 
         let mut page = String::from("<table>");
 
-        let mut paths_with_filenames = dir
+        let mut dirs = Vec::new();
+        let mut files = Vec::new();
+        for entry in dir
             .read_dir()
             .map_err(|e| af!("couldn't walk dir to make page: {}: {}", dir.display(), e))?
-            .map(|entry| {
-                entry
-                    .map_err(|e| af!("couldn't read dir entry in {}: {}", dir.display(), e))
-                    .map(|entry| {
-                        let path = entry.path();
-                        (
-                            path.file_name()
-                                .map(|osstr| osstr.to_string_lossy().to_string()),
-                            path,
-                        )
-                    })
-            })
-            .map(|filename_path| match filename_path {
-                Ok((Some(filename), path)) => Ok((filename, path)),
-                Ok((None, path)) => Ok((String::from("unknown"), path)),
-                Err(err) => Err(err),
-            })
-            .collect::<Result<Vec<_>>>()?;
-        paths_with_filenames.sort_by(|(f1, _), (f2, _)| f1.cmp(f2));
+        {
+            let entry =
+                entry.map_err(|e| af!("couldn't read dir entry in {}: {}", dir.display(), e))?;
+            let path = entry.path();
 
-        for (_, path) in paths_with_filenames {
             if path == self.thumbnail_dir {
                 continue;
             }
 
-            let is_dir = path.is_dir();
+            let basename = if let Some(basename) = path
+                .file_name()
+                .map(|osstr| osstr.to_string_lossy().to_string())
+            {
+                basename
+            } else {
+                String::from("<unknown>")
+            };
 
+            if path.is_dir() {
+                dirs.push((path, basename));
+            } else {
+                files.push((path, basename));
+            }
+        }
+
+        dirs.sort_by(|(_, name1), (_, name2)| name1.cmp(name2));
+        files.sort_by(|(_, name1), (_, name2)| name1.cmp(name2));
+
+        fn timestamp(time: std::time::SystemTime) -> String {
+            use chrono::{Datelike, Timelike};
+            let time: chrono::DateTime<chrono::Local> = time.into();
+            let (is_pm, hour) = time.hour12();
+            format!(
+                "{:04}-{:02}-{:02} {:02}:{:02} {}",
+                time.year(),
+                time.month(),
+                time.day(),
+                hour,
+                time.minute(),
+                if is_pm { "PM" } else { "AM" },
+            )
+        }
+
+        page +=
+            "<tr><th></th><th>filename</th><th>created</th><th>modified</th><th>accessed</th></tr>\n";
+
+        //} else if is_dir {
+        for (path, basename) in dirs.into_iter() {
+            page += "<tr>";
+
+            page += "<td>📁</td>";
+
+            page += "<td>";
+            page += &format!(
+                "<a href='{}/{}'>{}</a>",
+                config.page_root.as_ref().map(|s| s.as_str()).unwrap_or("/"),
+                path.strip_prefix(&self.file_dir)
+                    .map_err(|e| af!("couldn't strip prefix of {}: {}", path.display(), e))?
+                    .display(),
+                basename
+            );
+            page += "</td>";
+
+            page += "<td>";
+            let meta = path.metadata();
+            if let Ok(created) = meta.and_then(|meta| meta.created()) {
+                page += &timestamp(created);
+            }
+            page += "</td>";
+
+            page += "<td>";
+            let meta = path.metadata();
+            if let Ok(modified) = meta.and_then(|meta| meta.modified()) {
+                page += &timestamp(modified);
+            }
+            page += "</td>";
+
+            page += "<td>";
+            let meta = path.metadata();
+            if let Ok(accessed) = meta.and_then(|meta| meta.accessed()) {
+                page += &timestamp(accessed);
+            }
+            page += "</td>";
+
+            page += "</tr>\n";
+        }
+
+        for (path, basename) in files.into_iter() {
             page += "<tr>";
 
             page += "<td";
@@ -286,30 +358,33 @@ impl Database {
                         .map(OsStr::to_string_lossy)
                         .unwrap_or_else(|| Cow::Borrowed("<broken filename>"))
                 );
-            } else if is_dir {
-                page += ">📁";
             } else {
                 page += ">📃";
             }
             page += "</td>";
 
             page += "<td>";
-            let filename = &path
-                .file_name()
-                .map(OsStr::to_string_lossy)
-                .unwrap_or_else(|| Cow::Borrowed("<broken filename>"))
-                .to_string();
-            if is_dir {
-                page += &format!(
-                    "<a href='{}/{}'>{}</a>",
-                    config.page_root.as_ref().map(|s| s.as_str()).unwrap_or("/"),
-                    path.strip_prefix(&self.file_dir)
-                        .map_err(|e| af!("couldn't strip prefix of {}: {}", path.display(), e))?
-                        .display(),
-                    filename
-                );
-            } else {
-                page += filename;
+            page += &basename;
+            page += "</td>";
+
+            page += "<td>";
+            let meta = path.metadata();
+            if let Ok(created) = meta.and_then(|meta| meta.created()) {
+                page += &timestamp(created);
+            }
+            page += "</td>";
+
+            page += "<td>";
+            let meta = path.metadata();
+            if let Ok(modified) = meta.and_then(|meta| meta.modified()) {
+                page += &timestamp(modified);
+            }
+            page += "</td>";
+
+            page += "<td>";
+            let meta = path.metadata();
+            if let Ok(accessed) = meta.and_then(|meta| meta.accessed()) {
+                page += &timestamp(accessed);
             }
             page += "</td>";
 
@@ -671,6 +746,7 @@ fn main() -> Result<()> {
                         });
 
                     Page::default()
+                        .with_tab_title(path.display())
                         .with_title(title)
                         .with_content(content)
                         .render(&config)
