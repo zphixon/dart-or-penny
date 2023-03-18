@@ -304,7 +304,6 @@ impl Database {
         page +=
             "<tr><th></th><th>filename</th><th>created</th><th>modified</th><th>accessed</th></tr>\n";
 
-        //} else if is_dir {
         for (path, basename) in dirs.into_iter() {
             page += "<tr>";
 
@@ -364,7 +363,15 @@ impl Database {
             page += "</td>";
 
             page += "<td>";
-            page += &basename;
+            page += &format!(
+                "<a href='{}/{}'>{}</a>",
+                config.page_root.as_ref().map(|s| s.as_str()).unwrap_or(""),
+                path.strip_prefix(&self.file_dir).unwrap().display(),
+                path.file_name()
+                    .map(OsStr::to_string_lossy)
+                    .map(|s| s.to_string())
+                    .unwrap_or("???".into())
+            );
             page += "</td>";
 
             page += "<td>";
@@ -757,13 +764,25 @@ fn main() -> Result<()> {
                 Page::internal_error(&config)
             }
         } else {
-            Page::default()
-                .with_title("todo")
-                .with_paragraph(format!(
-                    "you're trying to download a file, this isn't implemented yet.</p><p>{}",
-                    path.display()
-                ))
-                .render(&config)
+            let Ok(file) = std::fs::File::open(&path) else {
+                return Page::internal_error(&config);
+            };
+
+            let extension = path
+                .extension()
+                .map(|ext| ext.to_string_lossy().to_lowercase());
+
+            Response::from_file(
+                match extension.as_ref().map(|s| s.as_str()) {
+                    Some("jpg" | "jpeg") => "image/jpeg",
+                    Some("png") => "image/png",
+                    Some("tiff" | "tif") => "image/tiff",
+                    Some("bmp") => "image/bmp",
+                    Some("gif") => "image/gif",
+                    _ => "application/binary",
+                },
+                file,
+            )
         }
     });
 }
