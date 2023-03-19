@@ -344,13 +344,13 @@ impl Database {
             page += "</tr>\n";
         }
 
-        for (path, basename) in files.into_iter() {
+        for (path, _) in files.into_iter() {
             page += "<tr>";
 
             page += "<td";
             if let Some(thumbnail_path) = self.thumbnails.get(&path) {
                 page += &format!(
-                    " class=thumbnail><img src={}?thumbnail={}>",
+                    " class=thumbnail><img src='{}?thumbnail={}'>",
                     config.page_root.as_ref().map(String::as_str).unwrap_or(""),
                     thumbnail_path
                         .file_name()
@@ -363,10 +363,14 @@ impl Database {
             page += "</td>";
 
             page += "<td>";
+            let href = format!("{}", path.strip_prefix(&self.file_dir).unwrap().display());
+            let encoded = rouille::percent_encoding::percent_encode(
+                href.as_bytes(),
+                rouille::percent_encoding::NON_ALPHANUMERIC,
+            );
             page += &format!(
-                "<a href='{}/{}'>{}</a>",
-                config.page_root.as_ref().map(|s| s.as_str()).unwrap_or(""),
-                path.strip_prefix(&self.file_dir).unwrap().display(),
+                "<a href='{}'>{}</a>",
+                encoded,
                 path.file_name()
                     .map(OsStr::to_string_lossy)
                     .map(|s| s.to_string())
