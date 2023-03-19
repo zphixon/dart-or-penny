@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use image::io::Reader as ImageReader;
 use rouille::Response;
 use std::{
@@ -10,12 +10,25 @@ use std::{
     sync::RwLock,
 };
 
+mod path;
+
+use path::{LocalPath, ServePath, ThumbnailPath};
+
+#[macro_export]
 macro_rules! af {
     ($($tt:tt)*) => { {
         let msg = format!($($tt)*);
-        tracing::error!("{}:{} {}", file!(), line!(), msg);
-        anyhow!(msg)
+        ::tracing::error!("{}:{} {}", file!(), line!(), msg);
+        ::anyhow::anyhow!(msg)
     } };
+}
+
+fn percent_encode(s: &str) -> String {
+    let encoded = rouille::percent_encoding::percent_encode(
+        s.as_bytes(),
+        rouille::percent_encoding::NON_ALPHANUMERIC,
+    );
+    encoded.to_string()
 }
 
 #[derive(Default)]
@@ -126,7 +139,7 @@ impl Page {
     }
 }
 
-fn thumbnail_path(of: &Path, thumbnail_dir: &Path) -> PathBuf {
+fn thumbnail_path(of: &Path, thumbnail_dir: &LocalPath) -> ThumbnailPath {
     let name = format!("{}", of.display());
 
     let mut hasher = md5_rs::Context::new();
@@ -137,27 +150,33 @@ fn thumbnail_path(of: &Path, thumbnail_dir: &Path) -> PathBuf {
         .map(|byte| format!("{:02x}", byte))
         .collect::<String>();
 
-    thumbnail_dir.join(hash).with_extension("jpg")
+    ThumbnailPath::from(thumbnail_dir.local_path().join(hash).with_extension("jpg"))
 }
 
 #[derive(Debug)]
 enum File {
-    Dir(PathBuf, Vec<File>),
-    File(PathBuf),
+    Dir(LocalPath, Vec<File>),
+    File(LocalPath),
 }
 
 impl File {
     const THUMBNAILABLE_EXTENSIONS: &[&'static str] =
         &["png", "tiff", "bmp", "gif", "jpeg", "jpg", "tif"];
 
-    fn walk_dir(dir: &Path, include_path: &impl Fn(&Path) -> bool) -> Result<Vec<File>> {
+    fn walk_dir(dir: &LocalPath, include_path: &impl Fn(&Path) -> bool) -> Result<Vec<File>> {
         let mut contents = Vec::new();
         for entry in dir
+            .local_path()
             .read_dir()
-            .map_err(|e| af!("couldn't walk dir {}: {}", dir.display(), e))?
+            .map_err(|e| af!("couldn't walk dir {}: {}", dir.local_path().display(), e))?
         {
-            let entry =
-                entry.map_err(|e| af!("couldn't read entry in {}: {}", dir.display(), e))?;
+            let entry = entry.map_err(|e| {
+                af!(
+                    "couldn't read entry in {}: {}",
+                    dir.local_path().display(),
+                    e
+                )
+            })?;
             let path = entry.path().canonicalize().map_err(|e| {
                 af!(
                     "couldn't get absolute path of {}: {}",
@@ -168,9 +187,11 @@ impl File {
 
             if include_path(&path) {
                 contents.push(if path.is_dir() {
-                    File::Dir(path.clone(), Self::walk_dir(&path, include_path)?)
+                    let local_path = LocalPath::from(path);
+                    let inner = Self::walk_dir(&local_path, include_path)?;
+                    File::Dir(local_path, inner)
                 } else {
-                    File::File(path)
+                    File::File(LocalPath::from(path))
                 });
             }
         }
@@ -182,7 +203,7 @@ impl File {
         match self {
             File::Dir(..) => false,
             File::File(file) => {
-                let Some(ext) = file.extension() else {
+                let Some(ext) = file.local_path().extension() else {
                     return false;
                 };
 
@@ -193,24 +214,31 @@ impl File {
     }
 }
 
-fn build_thumbnail_db(files: &[File], thumbnail_dir: &Path) -> Result<HashMap<PathBuf, PathBuf>> {
+fn build_thumbnail_db(
+    files: &[File],
+    thumbnail_dir: &LocalPath,
+) -> Result<HashMap<LocalPath, ThumbnailPath>> {
     fn btdb_rec(
-        db: &mut HashMap<PathBuf, PathBuf>,
+        db: &mut HashMap<LocalPath, ThumbnailPath>,
         files: &[File],
-        thumbnail_dir: &Path,
+        thumbnail_dir: &LocalPath,
     ) -> Result<()> {
         for file in files {
             match file {
                 File::Dir(_, files) => btdb_rec(db, files, thumbnail_dir)?,
                 file @ File::File(path) if file.may_be_thumbnailed() => {
-                    let path = path.canonicalize().map_err(|e| {
-                        af!("couldn't get absolute path for {}: {}", path.display(), e)
+                    let path = path.local_path().canonicalize().map_err(|e| {
+                        af!(
+                            "couldn't get absolute path for {}: {}",
+                            path.local_path().display(),
+                            e
+                        )
                     })?;
                     let thumbnail_path = thumbnail_path(&path, thumbnail_dir);
-                    db.insert(path, thumbnail_path);
+                    db.insert(LocalPath::from(path), thumbnail_path);
                 }
                 File::File(path) => {
-                    tracing::debug!("skipping thumbnail for {}", path.display());
+                    tracing::debug!("skipping thumbnail for {}", path.local_path().display());
                 }
             }
         }
@@ -224,30 +252,32 @@ fn build_thumbnail_db(files: &[File], thumbnail_dir: &Path) -> Result<HashMap<Pa
 }
 
 #[derive(Debug)]
-struct Database {
-    file_dir: PathBuf,
+pub struct Database {
+    file_dir: LocalPath,
     #[allow(dead_code)]
     files: Vec<File>,
-    thumbnail_dir: PathBuf,
-    thumbnails: HashMap<PathBuf, PathBuf>,
-    pages: RwLock<HashMap<PathBuf, String>>,
+    thumbnail_dir: LocalPath,
+    thumbnails: HashMap<LocalPath, ThumbnailPath>,
+    pages: RwLock<HashMap<LocalPath, String>>,
 }
 
 impl Database {
     fn open_thumbnail(&self, thumb: &str) -> Result<FsFile> {
-        let thumbnail_path = self.thumbnail_dir.join(thumb);
+        let thumbnail_path = self.thumbnail_dir.local_path().join(thumb);
         Ok(FsFile::open(thumbnail_path)?)
     }
 
-    fn get_content_for(&self, config: &Config, dir: &Path) -> Result<Option<String>> {
+    fn get_content_for(&self, config: &Config, serve_dir: &ServePath) -> Result<Option<String>> {
+        let local_dir = LocalPath::from_serve_path(&self, config, serve_dir)?;
+
         {
             let read = self
                 .pages
                 .read()
                 .map_err(|e| af!("couldn't lock page cache for reading: {}", e))?;
 
-            if read.contains_key(dir) {
-                return Ok(read.get(dir).cloned());
+            if read.contains_key(&local_dir) {
+                return Ok(read.get(&local_dir).cloned());
             }
         }
 
@@ -255,19 +285,28 @@ impl Database {
 
         let mut dirs = Vec::new();
         let mut files = Vec::new();
-        for entry in dir
-            .read_dir()
-            .map_err(|e| af!("couldn't walk dir to make page: {}: {}", dir.display(), e))?
-        {
-            let entry =
-                entry.map_err(|e| af!("couldn't read dir entry in {}: {}", dir.display(), e))?;
-            let path = entry.path();
+        for entry in local_dir.local_path().read_dir().map_err(|e| {
+            af!(
+                "couldn't walk dir to make page: {}: {}",
+                local_dir.local_path().display(),
+                e
+            )
+        })? {
+            let entry = entry.map_err(|e| {
+                af!(
+                    "couldn't read dir entry in {}: {}",
+                    local_dir.local_path().display(),
+                    e
+                )
+            })?;
+            let path = LocalPath::from(entry.path());
 
             if path == self.thumbnail_dir {
                 continue;
             }
 
             let basename = if let Some(basename) = path
+                .local_path()
                 .file_name()
                 .map(|osstr| osstr.to_string_lossy().to_string())
             {
@@ -276,7 +315,7 @@ impl Database {
                 String::from("<unknown>")
             };
 
-            if path.is_dir() {
+            if path.local_path().is_dir() {
                 dirs.push((path, basename));
             } else {
                 files.push((path, basename));
@@ -311,31 +350,28 @@ impl Database {
 
             page += "<td>";
             page += &format!(
-                "<a href='{}/{}'>{}</a>",
-                config.page_root.as_ref().map(|s| s.as_str()).unwrap_or("/"),
-                path.strip_prefix(&self.file_dir)
-                    .map_err(|e| af!("couldn't strip prefix of {}: {}", path.display(), e))?
-                    .display(),
+                "<a href='{}'>{}</a>",
+                ServePath::from_local_path(&self, config, &path)?.percent_encode(),
                 basename
             );
             page += "</td>";
 
             page += "<td>";
-            let meta = path.metadata();
+            let meta = path.local_path().metadata();
             if let Ok(created) = meta.and_then(|meta| meta.created()) {
                 page += &timestamp(created);
             }
             page += "</td>";
 
             page += "<td>";
-            let meta = path.metadata();
+            let meta = path.local_path().metadata();
             if let Ok(modified) = meta.and_then(|meta| meta.modified()) {
                 page += &timestamp(modified);
             }
             page += "</td>";
 
             page += "<td>";
-            let meta = path.metadata();
+            let meta = path.local_path().metadata();
             if let Ok(accessed) = meta.and_then(|meta| meta.accessed()) {
                 page += &timestamp(accessed);
             }
@@ -344,7 +380,7 @@ impl Database {
             page += "</tr>\n";
         }
 
-        for (path, _) in files.into_iter() {
+        for (path, basename) in files.into_iter() {
             page += "<tr>";
 
             page += "<td";
@@ -353,6 +389,7 @@ impl Database {
                     " class=thumbnail><img src='{}?thumbnail={}'>",
                     config.page_root.as_ref().map(String::as_str).unwrap_or(""),
                     thumbnail_path
+                        .thumbnail_path()
                         .file_name()
                         .map(OsStr::to_string_lossy)
                         .unwrap_or_else(|| Cow::Borrowed("<broken filename>"))
@@ -363,37 +400,29 @@ impl Database {
             page += "</td>";
 
             page += "<td>";
-            let href = format!("{}", path.strip_prefix(&self.file_dir).unwrap().display());
-            let encoded = rouille::percent_encoding::percent_encode(
-                href.as_bytes(),
-                rouille::percent_encoding::NON_ALPHANUMERIC,
-            );
             page += &format!(
                 "<a href='{}'>{}</a>",
-                encoded,
-                path.file_name()
-                    .map(OsStr::to_string_lossy)
-                    .map(|s| s.to_string())
-                    .unwrap_or("???".into())
+                ServePath::from_local_path(&self, config, &path)?.percent_encode(),
+                basename,
             );
             page += "</td>";
 
             page += "<td>";
-            let meta = path.metadata();
+            let meta = path.local_path().metadata();
             if let Ok(created) = meta.and_then(|meta| meta.created()) {
                 page += &timestamp(created);
             }
             page += "</td>";
 
             page += "<td>";
-            let meta = path.metadata();
+            let meta = path.local_path().metadata();
             if let Ok(modified) = meta.and_then(|meta| meta.modified()) {
                 page += &timestamp(modified);
             }
             page += "</td>";
 
             page += "<td>";
-            let meta = path.metadata();
+            let meta = path.local_path().metadata();
             if let Ok(accessed) = meta.and_then(|meta| meta.accessed()) {
                 page += &timestamp(accessed);
             }
@@ -409,7 +438,7 @@ impl Database {
                 .pages
                 .write()
                 .map_err(|e| af!("couldn't lock page cache for writing: {}", e))?;
-            write.insert(dir.to_owned(), page);
+            write.insert(local_dir.clone(), page);
         }
 
         let read = self
@@ -417,56 +446,67 @@ impl Database {
             .read()
             .map_err(|e| af!("couldn't lock page cache for reading: {}", e))?;
 
-        if read.contains_key(dir) {
-            Ok(read.get(dir).cloned())
+        if read.contains_key(&local_dir) {
+            Ok(read.get(&local_dir).cloned())
         } else {
             Err(af!(
                 "couldn't make page for {} for some reason?",
-                dir.display()
+                local_dir.local_path().display()
             ))
         }
     }
 
     fn read_config_and_make_dirs(config: &Config) -> Result<Database> {
         let thumbnail_dir = PathBuf::from(&config.thumbnail_dir);
-        let thumbnail_dir = thumbnail_dir.canonicalize().map_err(|e| {
+        let thumbnail_dir = LocalPath::from(thumbnail_dir.canonicalize().map_err(|e| {
             af!(
                 "couldn't create absolute thumbnail dir from {}: {}",
                 thumbnail_dir.display(),
                 e
             )
-        })?;
-        if !thumbnail_dir.exists() {
-            std::fs::create_dir(&thumbnail_dir).map_err(|e| {
+        })?);
+        if !thumbnail_dir.local_path().exists() {
+            std::fs::create_dir(thumbnail_dir.local_path()).map_err(|e| {
                 af!(
                     "couldn't create thumbnail dir {}: {}",
-                    thumbnail_dir.display(),
+                    thumbnail_dir.local_path().display(),
                     e
                 )
             })?;
-        } else if !thumbnail_dir.is_dir() {
-            return Err(af!("thumbnail dir must be dir {}", thumbnail_dir.display()));
+        } else if !thumbnail_dir.local_path().is_dir() {
+            return Err(af!(
+                "thumbnail dir must be dir {}",
+                thumbnail_dir.local_path().display()
+            ));
         }
 
         let file_dir = PathBuf::from(&config.file_dir);
-        let file_dir = file_dir.canonicalize().map_err(|e| {
+        let file_dir = LocalPath::from(file_dir.canonicalize().map_err(|e| {
             af!(
                 "couldn't create absolute file dir from {}: {}",
                 file_dir.display(),
                 e
             )
-        })?;
-        if !file_dir.exists() {
-            std::fs::create_dir(&file_dir)
-                .map_err(|e| af!("couldn't create file dir {}: {}", file_dir.display(), e))?;
-        } else if !file_dir.is_dir() {
-            return Err(af!("file dir must be dir {}", file_dir.display()));
+        })?);
+        if !file_dir.local_path().exists() {
+            std::fs::create_dir(file_dir.local_path()).map_err(|e| {
+                af!(
+                    "couldn't create file dir {}: {}",
+                    file_dir.local_path().display(),
+                    e
+                )
+            })?;
+        } else if !file_dir.local_path().is_dir() {
+            return Err(af!(
+                "file dir must be dir {}",
+                file_dir.local_path().display()
+            ));
         }
-        if file_dir.parent().is_none() {
+        if file_dir.local_path().parent().is_none() {
             return Err(af!("cannot serve files from root dir"));
         }
 
-        let files = File::walk_dir(&file_dir, &|path| path != &thumbnail_dir)?;
+        let files = File::walk_dir(&file_dir, &|path| path != thumbnail_dir.local_path())?;
         let thumbnails = build_thumbnail_db(&files, &thumbnail_dir)?;
         Ok(Database {
             file_dir,
@@ -479,23 +519,29 @@ impl Database {
 
     fn index_and_build_thumbnail_db(&self, config: &Config) -> Result<()> {
         for (file_path, thumbnail_path) in self.thumbnails.iter() {
-            if !thumbnail_path.exists() || config.rebuild_thumbnails {
+            if !thumbnail_path.thumbnail_path().exists() || config.rebuild_thumbnails {
                 tracing::info!(
                     "making thumbnail for {} -> {}",
-                    file_path.display(),
-                    thumbnail_path.display()
+                    file_path.local_path().display(),
+                    thumbnail_path.thumbnail_path().display()
                 );
 
-                let image = match ImageReader::open(file_path)
+                let image = match ImageReader::open(file_path.local_path())
                     .map_err(|e| {
                         af!(
                             "couldn't read file for thumbnailing: {}: {}",
-                            file_path.display(),
+                            file_path.local_path().display(),
                             e
                         )
                     })?
                     .with_guessed_format()
-                    .map_err(|e| af!("couldn't guess format: {}: {}", file_path.display(), e))?
+                    .map_err(|e| {
+                        af!(
+                            "couldn't guess format: {}: {}",
+                            file_path.local_path().display(),
+                            e
+                        )
+                    })?
                     .decode()
                 {
                     Ok(image) => image,
@@ -513,14 +559,16 @@ impl Database {
                 tracing::debug!("resizing to {}x{}", nw, nh);
                 let thumbnail = image::imageops::thumbnail(&image, nw, nh);
 
-                thumbnail.save(thumbnail_path).map_err(|e| {
-                    af!(
-                        "couldn't save thumbnail for {} in {}: {}",
-                        file_path.display(),
-                        thumbnail_path.display(),
-                        e
-                    )
-                })?;
+                thumbnail
+                    .save(thumbnail_path.thumbnail_path())
+                    .map_err(|e| {
+                        af!(
+                            "couldn't save thumbnail for {} in {}: {}",
+                            file_path.local_path().display(),
+                            thumbnail_path.thumbnail_path().display(),
+                            e
+                        )
+                    })?;
             }
         }
         Ok(())
@@ -528,7 +576,7 @@ impl Database {
 }
 
 #[derive(Debug)]
-struct Config {
+pub struct Config {
     bind: String,
     auth: Option<String>,
     thumbnail_dir: String,
@@ -686,78 +734,92 @@ fn main() -> Result<()> {
                 return Page::bad_request(&config);
             }
 
-            full_url.strip_prefix(root).unwrap()
+            &full_url
         } else {
             &full_url
         };
 
-        let base = PathBuf::from(&database.file_dir);
-        let path = if url.is_empty() {
-            base
-        } else {
-            base.join(&url[1..])
+        let url_serve_path = ServePath::from(PathBuf::from(url));
+        let Ok(request_local_path)
+            = LocalPath::from_serve_path(&database, &config, &url_serve_path)
+        else {
+            return Page::bad_request(&config);
         };
 
-        let path = if let Ok(path) = path.canonicalize() {
-            path
-        } else {
-            tracing::debug!("canonicalize failed");
-            path
-        };
+        tracing::debug!(
+            "path looks like {}",
+            request_local_path.local_path().display()
+        );
 
-        tracing::debug!("path looks like {}", path.display());
-
-        if path.ancestors().all(|parent| parent != &database.file_dir)
-            && path
+        if request_local_path
+            .local_path()
+            .ancestors()
+            .all(|parent| parent != database.file_dir.local_path())
+            && request_local_path
+                .local_path()
                 .ancestors()
-                .all(|parent| parent != &database.thumbnail_dir)
+                .all(|parent| parent != database.thumbnail_dir.local_path())
         {
             tracing::warn!(
                 "preventing directory traversal: {} tried to access {}",
                 remote,
-                path.display()
+                request_local_path
+                    .local_path()
+                    .canonicalize()
+                    .unwrap_or(PathBuf::from("(couldn't canonicalize)"))
+                    .display()
             );
             return Page::bad_request(&config);
         }
 
-        tracing::debug!("serving {} on \"{}\"", path.display(), url);
+        tracing::debug!(
+            "serving {} on \"{}\"",
+            request_local_path.local_path().display(),
+            url
+        );
 
-        if path.is_dir() {
-            if let Ok(maybe_content) = database.get_content_for(&config, &path) {
+        if request_local_path.local_path().is_dir() {
+            if let Ok(maybe_content) = database.get_content_for(&config, &url_serve_path) {
                 if let Some(content) = maybe_content {
-                    let full_link = |path: &Path| {
-                        format!(
-                            "<a href='{}/{}'>{}</a>",
-                            config.page_root.as_ref().map(|s| s.as_str()).unwrap_or(""),
-                            path.strip_prefix(&database.file_dir).unwrap().display(),
-                            path.display()
-                        )
+                    let full_link = |path: &LocalPath| -> Result<String> {
+                        Ok(format!(
+                            "<a href='{}'>{}</a>",
+                            ServePath::from_local_path(&database, &config, path)?.percent_encode(),
+                            path.local_path().display(),
+                        ))
                     };
-                    let filename_link = |path: &Path| {
-                        format!(
-                            "<a href='{}/{}'>{}</a>",
-                            config.page_root.as_ref().map(|s| s.as_str()).unwrap_or(""),
-                            path.strip_prefix(&database.file_dir).unwrap().display(),
-                            path.file_name()
+                    let filename_link = |path: &LocalPath| -> Result<String> {
+                        Ok(format!(
+                            "<a href='{}'>{}</a>",
+                            ServePath::from_local_path(&database, &config, path)?.percent_encode(),
+                            path.local_path()
+                                .file_name()
                                 .map(OsStr::to_string_lossy)
                                 .map(|s| s.to_string())
                                 .unwrap_or("???".into())
-                        )
+                        ))
                     };
-                    let ancestors = path
+                    let ancestors = request_local_path
+                        .local_path()
                         .ancestors()
-                        .take_while(|parent| *parent != database.file_dir.parent().unwrap())
+                        .take_while(|parent| {
+                            *parent != database.file_dir.local_path().parent().unwrap()
+                        })
                         .collect::<Vec<_>>();
-                    let title = ancestors
-                        .into_iter()
-                        .rev()
-                        .skip(1)
-                        .fold(full_link(&database.file_dir), |acc, parent| {
-                            acc + "/" + &filename_link(parent)
-                        });
+                    let Ok(title) = ancestors.into_iter().rev().skip(1).fold(
+                        full_link(&database.file_dir),
+                        |acc, parent| {
+                            acc.and_then(|acc| {
+                                let link = filename_link(&LocalPath::from(parent.to_path_buf()))?;
+                                Ok(acc + "/" + &link)
+                            })
+                        },
+                    ) else {
+                        return Page::internal_error(&config);
+                    };
 
                     Page::default()
-                        .with_tab_title(path.display())
+                        .with_tab_title(request_local_path.local_path().display())
                         .with_title(title)
                         .with_content(content)
                         .render(&config)
@@ -768,11 +830,12 @@ fn main() -> Result<()> {
                 Page::internal_error(&config)
             }
         } else {
-            let Ok(file) = std::fs::File::open(&path) else {
-                return Page::internal_error(&config);
+            let Ok(file) = std::fs::File::open(request_local_path.local_path()) else {
+                return Page::not_found(&config);
             };
 
-            let extension = path
+            let extension = request_local_path
+                .local_path()
                 .extension()
                 .map(|ext| ext.to_string_lossy().to_lowercase());
 
