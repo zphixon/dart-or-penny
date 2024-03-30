@@ -782,7 +782,8 @@ fn main() -> Result<()> {
                     tracing::error!("couldn't read thumbnail {}", thumbnail);
                     return Page::internal_error(&config);
                 };
-                return Response::from_file("image/jpeg", thumb);
+                return Response::from_file("image/jpeg", thumb)
+                    .with_unique_header("Cache-Control", "public, max-age=604800, immutable");
             }
         }
 
