@@ -75,7 +75,7 @@ impl Page {
         }
     }
 
-    fn render(self, config: &Config) -> Response {
+    fn render(self, _config: &Config) -> Response {
         let title = if let Some(code) = self.code {
             format!("{}: {}", code, self.title)
         } else {
@@ -89,17 +89,53 @@ impl Page {
     <title>{}</title>
     <style>
       h1 {{ color: green; }}
-      .thumbnail {{
-        width: {}px;
+      /*.icon {{*/
+      /*  height: 3em;*/
+      /*  text-align: center;*/
+      /*  width: 3em;*/
+      /*}}*/
+      .icon > img {{
+        max-height: 3em;
+        max-width: 3em;
       }}
-      table, td, th {{
-        border: 1px solid #090;
-        border-collapse: collapse;
-        padding-left: 4pt;
-        padding-right: 8pt;
+      /*table, td, th {{*/
+      /*  border: 1px solid #090;*/
+      /*  border-collapse: collapse;*/
+      /*}}*/
+      /*.filename, .created, .modified, .accessed {{*/
+      /*  padding-left: 1em;*/
+      /*}}*/
+      /*table {{*/
+      /*  width: 80%;*/
+      /*}}*/
+      .filetable {{
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 1px;
+        background: green;
       }}
-      table {{
-        width: 80%;
+      .row {{
+        display: grid;
+        gap: 1px;
+        grid-template-columns: 3em 3fr repeat(3, 1fr);
+      }}
+      .row > div {{
+        word-break: break-all;
+        background: white;
+        padding: 0.25em;
+      }}
+      .icon {{
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }}
+      @media (max-width: 850px) {{
+        .modified, .accessed {{
+          display: none;
+        }}
+        .row {{
+          grid-template-columns: 3em 3fr 1fr;
+        }}
       }}
     </style>
   </head>
@@ -109,7 +145,7 @@ impl Page {
   </body>
 </html>
 "#,
-            self.tab_title, config.thumbnail_size, title, self.content
+            self.tab_title, title, self.content
         ))
         .with_status_code(self.code.unwrap_or(200))
     }
@@ -281,7 +317,7 @@ impl Database {
             }
         }
 
-        let mut page = String::from("<table>");
+        let mut page = String::from("<div class=\"filetable\">");
 
         let mut dirs = Vec::new();
         let mut files = Vec::new();
@@ -341,49 +377,49 @@ impl Database {
         }
 
         page +=
-            "<tr><th></th><th>filename</th><th>created</th><th>modified</th><th>accessed</th></tr>\n";
+            "<div class=\"header row\"><div></div><div>filename</div><div class=\"header created\">created</div><div class=\"header modified\">modified</div><div class=\"header accessed\">accessed</div></div>\n";
 
         for (path, basename) in dirs.into_iter() {
-            page += "<tr>";
+            page += "<div class=\"dir row\">";
 
-            page += "<td class=\"dir icon\">📁</td>";
+            page += "<div class=\"dir icon\">📁</div>";
 
-            page += "<td class=\"dir filename\">";
+            page += "<div class=\"dir filename\">";
             page += &format!(
                 "<a href='{}'>{}</a>",
                 ServePath::from_local_path(&self, config, &path)?.percent_encode(),
                 basename
             );
-            page += "</td>";
+            page += "</div>";
 
-            page += "<td class=\"dir created\">";
+            page += "<div class=\"dir created\">";
             let meta = path.local_path().metadata();
             if let Ok(created) = meta.and_then(|meta| meta.created()) {
                 page += &timestamp(created);
             }
-            page += "</td>";
+            page += "</div>";
 
-            page += "<td class=\"dir modified\">";
+            page += "<div class=\"dir modified\">";
             let meta = path.local_path().metadata();
             if let Ok(modified) = meta.and_then(|meta| meta.modified()) {
                 page += &timestamp(modified);
             }
-            page += "</td>";
+            page += "</div>";
 
-            page += "<td class=\"dir accessed\">";
+            page += "<div class=\"dir accessed\">";
             let meta = path.local_path().metadata();
             if let Ok(accessed) = meta.and_then(|meta| meta.accessed()) {
                 page += &timestamp(accessed);
             }
-            page += "</td>";
+            page += "</div>";
 
-            page += "</tr>\n";
+            page += "</div>\n";
         }
 
         for (path, basename) in files.into_iter() {
-            page += "<tr>";
+            page += "<div class=\"file row\">";
 
-            page += "<td class=\"file icon\"";
+            page += "<div class=\"file icon\"";
             if let Some(thumbnail_path) = self.thumbnails.get(&path) {
                 page += &format!(
                     "><img src='{}?thumbnail={}'>",
@@ -397,41 +433,41 @@ impl Database {
             } else {
                 page += ">📃";
             }
-            page += "</td>";
+            page += "</div>";
 
-            page += "<td class=\"file filename\">";
+            page += "<div class=\"file filename\">";
             page += &format!(
                 "<a href='{}'>{}</a>",
                 ServePath::from_local_path(&self, config, &path)?.percent_encode(),
                 basename,
             );
-            page += "</td>";
+            page += "</div>";
 
-            page += "<td class=\"file created\">";
+            page += "<div class=\"file created\">";
             let meta = path.local_path().metadata();
             if let Ok(created) = meta.and_then(|meta| meta.created()) {
                 page += &timestamp(created);
             }
-            page += "</td>";
+            page += "</div>";
 
-            page += "<td class=\"file modified\">";
+            page += "<div class=\"file modified\">";
             let meta = path.local_path().metadata();
             if let Ok(modified) = meta.and_then(|meta| meta.modified()) {
                 page += &timestamp(modified);
             }
-            page += "</td>";
+            page += "</div>";
 
-            page += "<td class=\"file accessed\">";
+            page += "<div class=\"file accessed\">";
             let meta = path.local_path().metadata();
             if let Ok(accessed) = meta.and_then(|meta| meta.accessed()) {
                 page += &timestamp(accessed);
             }
-            page += "</td>";
+            page += "</div>";
 
-            page += "</tr>\n";
+            page += "</div>\n";
         }
 
-        page += "</table>";
+        page += "</div>";
 
         {
             let mut write = self
