@@ -346,9 +346,9 @@ impl Database {
         for (path, basename) in dirs.into_iter() {
             page += "<tr>";
 
-            page += "<td>📁</td>";
+            page += "<td class=\"dir icon\">📁</td>";
 
-            page += "<td>";
+            page += "<td class=\"dir filename\">";
             page += &format!(
                 "<a href='{}'>{}</a>",
                 ServePath::from_local_path(&self, config, &path)?.percent_encode(),
@@ -356,21 +356,21 @@ impl Database {
             );
             page += "</td>";
 
-            page += "<td>";
+            page += "<td class=\"dir created\">";
             let meta = path.local_path().metadata();
             if let Ok(created) = meta.and_then(|meta| meta.created()) {
                 page += &timestamp(created);
             }
             page += "</td>";
 
-            page += "<td>";
+            page += "<td class=\"dir modified\">";
             let meta = path.local_path().metadata();
             if let Ok(modified) = meta.and_then(|meta| meta.modified()) {
                 page += &timestamp(modified);
             }
             page += "</td>";
 
-            page += "<td>";
+            page += "<td class=\"dir accessed\">";
             let meta = path.local_path().metadata();
             if let Ok(accessed) = meta.and_then(|meta| meta.accessed()) {
                 page += &timestamp(accessed);
@@ -383,10 +383,10 @@ impl Database {
         for (path, basename) in files.into_iter() {
             page += "<tr>";
 
-            page += "<td";
+            page += "<td class=\"file icon\"";
             if let Some(thumbnail_path) = self.thumbnails.get(&path) {
                 page += &format!(
-                    " class=thumbnail><img src='{}?thumbnail={}'>",
+                    "><img src='{}?thumbnail={}'>",
                     config.page_root.as_ref().map(String::as_str).unwrap_or(""),
                     thumbnail_path
                         .thumbnail_path()
@@ -399,7 +399,7 @@ impl Database {
             }
             page += "</td>";
 
-            page += "<td>";
+            page += "<td class=\"file filename\">";
             page += &format!(
                 "<a href='{}'>{}</a>",
                 ServePath::from_local_path(&self, config, &path)?.percent_encode(),
@@ -407,21 +407,21 @@ impl Database {
             );
             page += "</td>";
 
-            page += "<td>";
+            page += "<td class=\"file created\">";
             let meta = path.local_path().metadata();
             if let Ok(created) = meta.and_then(|meta| meta.created()) {
                 page += &timestamp(created);
             }
             page += "</td>";
 
-            page += "<td>";
+            page += "<td class=\"file modified\">";
             let meta = path.local_path().metadata();
             if let Ok(modified) = meta.and_then(|meta| meta.modified()) {
                 page += &timestamp(modified);
             }
             page += "</td>";
 
-            page += "<td>";
+            page += "<td class=\"file accessed\">";
             let meta = path.local_path().metadata();
             if let Ok(accessed) = meta.and_then(|meta| meta.accessed()) {
                 page += &timestamp(accessed);
