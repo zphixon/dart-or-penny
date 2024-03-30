@@ -5,3 +5,4 @@ file_dir = 'eg'
 thumbnail_size = 75
 
 #auth = 'zack:idk'
+auth_realm = 'dop'

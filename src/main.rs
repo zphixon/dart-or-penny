@@ -160,7 +160,7 @@ enum File {
 }
 
 impl File {
-    const THUMBNAILABLE_EXTENSIONS: &[&'static str] =
+    const THUMBNAILABLE_EXTENSIONS: &'static [&'static str] =
         &["png", "tiff", "bmp", "gif", "jpeg", "jpg", "tif"];
 
     fn walk_dir(dir: &LocalPath, include_path: &impl Fn(&Path) -> bool) -> Result<Vec<File>> {
@@ -584,6 +584,7 @@ pub struct Config {
     thumbnail_size: u32,
     rebuild_thumbnails: bool,
     page_root: Option<String>,
+    auth_realm: Option<String>,
 }
 
 impl Config {
@@ -648,6 +649,16 @@ impl Config {
             .ok_or_else(|| af!("bind must be string in config file {}", config_path))?
             .to_string();
 
+        let auth_realm = toml
+            .get("auth_realm")
+            .map(|realm| {
+                realm
+                    .as_str()
+                    .map(String::from)
+                    .ok_or_else(|| af!("auth_realm must be a string"))
+            })
+            .transpose()?;
+
         Ok(Config {
             bind,
             auth,
@@ -656,6 +667,7 @@ impl Config {
             thumbnail_size,
             rebuild_thumbnails: false,
             page_root,
+            auth_realm,
         })
     }
 }
@@ -691,22 +703,22 @@ fn main() -> Result<()> {
             if let Some(auth_value) = request.header("Authorization") {
                 let auth = auth_value.split(" ").collect::<Vec<_>>();
                 if auth.len() != 2 {
-                    tracing::warn!("fucked auth header: {}", auth_value);
+                    tracing::warn!("broken auth header: {}", auth_value);
                     return Page::bad_request(&config);
                 }
                 if auth[0] != "Basic" {
-                    tracing::warn!("fucked auth type: {}", auth[0]);
+                    tracing::warn!("broken auth type: {}", auth[0]);
                     return Page::bad_request(&config);
                 }
                 use base64::Engine;
                 let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&auth[1]) else {
-                tracing::warn!("fucked auth: {}", auth[1]);
-                return Page::bad_request(&config);
-            };
+                    tracing::warn!("broken auth: {}", auth[1]);
+                    return Page::bad_request(&config);
+                };
                 let Ok(auth) = std::str::from_utf8(&bytes) else {
-                tracing::warn!("fucked auth utf8: {}", auth[1]);
-                return Page::bad_request(&config);
-            };
+                    tracing::warn!("broken auth utf8: {}", auth[1]);
+                    return Page::bad_request(&config);
+                };
                 if auth != config_auth {
                     tracing::warn!("incorrect user/pass from {}: {}", remote, auth);
                     return Page::bad_request(&config);
@@ -714,7 +726,17 @@ fn main() -> Result<()> {
             } else {
                 return Response::text("need auth!")
                     .with_status_code(401)
-                    .with_unique_header("WWW-Authenticate", "Basic realm=\"cock\"");
+                    .with_unique_header(
+                        "WWW-Authenticate",
+                        format!(
+                            "Basic realm=\"{}\"",
+                            config
+                                .auth_realm
+                                .as_ref()
+                                .map(|s| s.as_str())
+                                .unwrap_or("dop")
+                        ),
+                    );
             }
         }
 
@@ -740,8 +762,8 @@ fn main() -> Result<()> {
         };
 
         let url_serve_path = ServePath::from(PathBuf::from(url));
-        let Ok(request_local_path)
-            = LocalPath::from_serve_path(&database, &config, &url_serve_path)
+        let Ok(request_local_path) =
+            LocalPath::from_serve_path(&database, &config, &url_serve_path)
         else {
             return Page::bad_request(&config);
         };
