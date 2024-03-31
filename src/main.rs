@@ -120,9 +120,11 @@ impl Page {
         grid-template-columns: 3em 3fr repeat(3, 1fr);
       }}
       .row > div {{
-        word-break: break-all;
         background: white;
         padding: 0.25em;
+      }}
+      .row > .filename {{
+        word-break: break-all;
       }}
       .icon {{
         display: flex;
@@ -134,7 +136,7 @@ impl Page {
           display: none;
         }}
         .row {{
-          grid-template-columns: 3em 3fr 1fr;
+          grid-template-columns: 3em 3fr minmax(12em, 1fr);
         }}
       }}
     </style>
