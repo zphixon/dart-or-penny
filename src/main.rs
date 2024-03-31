@@ -129,7 +129,7 @@ impl Page {
         align-items: center;
         justify-content: center;
       }}
-      @media (max-width: 850px) {{
+      @media (max-width: 1150px) {{
         .modified, .accessed {{
           display: none;
         }}
