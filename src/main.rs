@@ -89,25 +89,10 @@ impl Page {
     <title>{}</title>
     <style>
       h1 {{ color: green; }}
-      /*.icon {{*/
-      /*  height: 3em;*/
-      /*  text-align: center;*/
-      /*  width: 3em;*/
-      /*}}*/
       .icon > img {{
         max-height: 3em;
         max-width: 3em;
       }}
-      /*table, td, th {{*/
-      /*  border: 1px solid #090;*/
-      /*  border-collapse: collapse;*/
-      /*}}*/
-      /*.filename, .created, .modified, .accessed {{*/
-      /*  padding-left: 1em;*/
-      /*}}*/
-      /*table {{*/
-      /*  width: 80%;*/
-      /*}}*/
       .filetable {{
         display: grid;
         grid-template-columns: 1fr;
@@ -470,7 +455,41 @@ impl Database {
             page += "</div>\n";
         }
 
-        page += "</div>";
+        page += r#"</div>
+<script type="text/javascript">
+let sort = null;
+function setSort() {
+    if (sort == null) {
+        sort = "mostRecentFirst";
+    } else if (sort == "mostRecentFirst") {
+        sort = "mostRecentLast";
+    } else {
+        sort = "mostRecentFirst";
+    }
+}
+
+function doSort(direction, list) {
+    [...list.children].sort((a, b) => {
+        if (direction == "mostRecentFirst") {
+            return new Date(a.children[3].innerText) < new Date(b.children[3].innerText);
+        } else if (direction == "mostRecentLast") {
+            return new Date(a.children[3].innerText) > new Date(b.children[3].innerText);
+        } else {
+            return false;
+        }
+    }).forEach(child => list.appendChild(child));
+}
+
+let rows = document.querySelector(".filetable");
+let created = document.querySelector(".header.created");
+let modified = document.querySelector(".header.modified");
+let accessed = document.querySelector(".header.accessed");
+
+created.onclick = () => { setSort(); doSort(sort, rows) };
+modified.onclick = () => { setSort(); doSort(sort, rows) };
+accessed.onclick = () => { setSort(); doSort(sort, rows) };
+
+</script>"#;
 
         {
             let mut write = self
