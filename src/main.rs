@@ -1,5 +1,5 @@
 use anyhow::Result;
-use image::io::Reader as ImageReader;
+use image::{buffer::ConvertBuffer, io::Reader as ImageReader, ImageBuffer, Rgb};
 use rouille::Response;
 use std::{
     borrow::Cow,
@@ -598,7 +598,8 @@ impl Database {
                 tracing::debug!("resizing to {}x{}", nw, nh);
                 let thumbnail = image::imageops::thumbnail(&image, nw, nh);
 
-                thumbnail
+                let converted: ImageBuffer<Rgb<u8>, _> = thumbnail.convert();
+                converted
                     .save(thumbnail_path.thumbnail_path())
                     .map_err(|e| {
                         af!(
