@@ -565,6 +565,11 @@ impl Database {
                     thumbnail_path.thumbnail_path().display()
                 );
 
+                if file_path.local_path().display().to_string().contains("sadcomp.jpg") {
+                    // zune-jpeg 0.4.11 panics???
+                    continue;
+                }
+
                 let image = match ImageReader::open(file_path.local_path())
                     .map_err(|e| {
                         af!(
