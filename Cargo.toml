@@ -1,20 +1,21 @@
 [package]
-name = 'dart-or-penny'
-version = '0.1.0'
-edition = '2021'
+name = "dart-or-penny"
+version = "0.1.0"
+edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-black-dwarf = { git = 'https://github.com/zphixon/black-dwarf.git' }
-rouille = '3.6.2'
-md5-rs = '0.1.5'
-anyhow = '1.0.81'
-tracing-subscriber = '0.3.18'
-tracing = '0.1.40'
-base64 = '0.22.0'
-chrono = '0.4.37'
+rouille = "3.6.2"
+md5-rs = "0.1.5"
+anyhow = "1.0.86"
+tracing-subscriber = "0.3.18"
+tracing = "0.1.40"
+base64 = "0.22.1"
+chrono = "0.4.38"
+notify = "6.1.1"
+toml = "0.8.14"
 
 [dependencies.image]
-version = '0.25.0'
-features = ['png', 'tiff', 'bmp', 'gif', 'jpeg']
+version = "0.25.0"
+features = ["png", "tiff", "bmp", "gif", "jpeg"]

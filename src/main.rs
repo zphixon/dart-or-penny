@@ -1,5 +1,6 @@
 use anyhow::Result;
 use image::{buffer::ConvertBuffer, io::Reader as ImageReader, ImageBuffer, Rgb};
+use notify::Watcher;
 use rouille::Response;
 use std::{
     borrow::Cow,
@@ -289,6 +290,32 @@ impl Database {
     fn open_thumbnail(&self, thumb: &str) -> Result<FsFile> {
         let thumbnail_path = self.thumbnail_dir.local_path().join(thumb);
         Ok(FsFile::open(thumbnail_path)?)
+    }
+
+    fn clear_cache(&self) -> Result<()> {
+        let mut write = self
+            .pages
+            .write()
+            .map_err(|e| af!("couldn't lock page cache for clearing: {}", e))?;
+        write.clear();
+        Ok(())
+    }
+
+    fn clear_cache_for(&self, path: &Path) -> Result<()> {
+        let mut write = self
+            .pages
+            .write()
+            .map_err(|e| af!("couldn't lock page cache for clearing: {}", e))?;
+        let mut lp = PathBuf::from(path);
+        if !lp.is_dir() {
+            lp.pop();
+        }
+        if write.remove(&LocalPath::from(lp.clone())).is_none() {
+            tracing::debug!("not cached, could not remove {}", lp.display());
+        } else {
+            tracing::debug!("removed {}", lp.display());
+        }
+        Ok(())
     }
 
     fn get_content_for(&self, config: &Config, serve_dir: &ServePath) -> Result<Option<String>> {
@@ -584,7 +611,12 @@ accessed.onclick = () => { setSort(); doSort(sort, rows) };
                     thumbnail_path.thumbnail_path().display()
                 );
 
-                if file_path.local_path().display().to_string().contains("sadcomp.jpg") {
+                if file_path
+                    .local_path()
+                    .display()
+                    .to_string()
+                    .contains("sadcomp.jpg")
+                {
                     // zune-jpeg 0.4.11 panics???
                     continue;
                 }
@@ -649,13 +681,14 @@ pub struct Config {
     rebuild_thumbnails: bool,
     page_root: Option<String>,
     auth_realm: Option<String>,
+    cache_clear_interval: u64,
 }
 
 impl Config {
     fn read_from(config_path: &str) -> Result<Config> {
         let config_file = std::fs::read_to_string(config_path)
             .map_err(|_| af!("can't read config file {}", config_path))?;
-        let toml = black_dwarf::toml::parse(&config_file)
+        let toml = toml::from_str::<toml::Value>(&config_file)
             .map_err(|e| af!("couldn't read config file {}:\n{:#?}", config_path, e))?;
 
         let thumbnail_dir = toml
@@ -680,7 +713,7 @@ impl Config {
         let thumbnail_size = toml
             .get("thumbnail_size")
             .map(|size| match size {
-                black_dwarf::toml::Value::Integer { value, .. } => (*value)
+                toml::Value::Integer(value) => (*value)
                     .try_into()
                     .map_err(|_| af!("thumbnail size must fit in u32")),
                 _ => Err(af!("thumbnail size must be integer")),
@@ -723,6 +756,13 @@ impl Config {
             })
             .transpose()?;
 
+        let cache_clear_interval = toml
+            .get("cache_clear_interval")
+            .iter()
+            .flat_map(|cci| cci.as_integer())
+            .next()
+            .unwrap_or(60 * 60) as u64;
+
         Ok(Config {
             bind,
             auth,
@@ -732,6 +772,7 @@ impl Config {
             rebuild_thumbnails: false,
             page_root,
             auth_realm,
+            cache_clear_interval,
         })
     }
 }
@@ -754,6 +795,39 @@ fn main() -> Result<()> {
     database.index_and_build_thumbnail_db(&config)?;
 
     tracing::info!("starting! binding to {}", config.bind);
+
+    // hmmmmmmm
+    let db: &Database = Box::leak(Box::new(database));
+
+    let file_dir = config.file_dir.clone();
+    let thumb_dir = Box::leak(Box::new(db.thumbnail_dir.clone()));
+    std::thread::spawn(move || {
+        let mut watcher = notify::recommended_watcher(|r: Result<notify::Event, _>| match r {
+            Ok(ev) => {
+                for path in ev
+                    .paths
+                    .iter()
+                    .filter(|path| !path.starts_with(thumb_dir.local_path()))
+                {
+                    tracing::info!("clearing cache for {}, got fs update", path.display());
+                    if db.clear_cache_for(path).is_err() {
+                        tracing::error!("could not clear cache");
+                    }
+                }
+            }
+            _ => {}
+        })
+        .expect("could not create fs watcher");
+
+        watcher
+            .watch(Path::new(&file_dir), notify::RecursiveMode::Recursive)
+            .expect("could not watch file dir");
+
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(config.cache_clear_interval));
+            db.clear_cache().expect("could not clear entire cache");
+        }
+    });
 
     rouille::start_server(config.bind.clone(), move |request| {
         let remote = request
@@ -806,7 +880,7 @@ fn main() -> Result<()> {
 
         if Some(&full_url) == config.page_root.as_ref() {
             if let Some(thumbnail) = request.get_param("thumbnail") {
-                let Ok(thumb) = database.open_thumbnail(&thumbnail) else {
+                let Ok(thumb) = db.open_thumbnail(&thumbnail) else {
                     tracing::error!("couldn't read thumbnail {}", thumbnail);
                     return Page::internal_error(&config);
                 };
@@ -827,8 +901,7 @@ fn main() -> Result<()> {
         };
 
         let url_serve_path = ServePath::from(PathBuf::from(url));
-        let Ok(request_local_path) =
-            LocalPath::from_serve_path(&database, &config, &url_serve_path)
+        let Ok(request_local_path) = LocalPath::from_serve_path(&db, &config, &url_serve_path)
         else {
             return Page::bad_request(&config);
         };
@@ -841,11 +914,11 @@ fn main() -> Result<()> {
         if request_local_path
             .local_path()
             .ancestors()
-            .all(|parent| parent != database.file_dir.local_path())
+            .all(|parent| parent != db.file_dir.local_path())
             && request_local_path
                 .local_path()
                 .ancestors()
-                .all(|parent| parent != database.thumbnail_dir.local_path())
+                .all(|parent| parent != db.thumbnail_dir.local_path())
         {
             tracing::warn!(
                 "preventing directory traversal: {} tried to access {}",
@@ -866,19 +939,19 @@ fn main() -> Result<()> {
         );
 
         if request_local_path.local_path().is_dir() {
-            if let Ok(maybe_content) = database.get_content_for(&config, &url_serve_path) {
+            if let Ok(maybe_content) = db.get_content_for(&config, &url_serve_path) {
                 if let Some(content) = maybe_content {
                     let full_link = |path: &LocalPath| -> Result<String> {
                         Ok(format!(
                             "<a href='{}'>{}</a>",
-                            ServePath::from_local_path(&database, &config, path)?.percent_encode(),
+                            ServePath::from_local_path(&db, &config, path)?.percent_encode(),
                             path.local_path().display(),
                         ))
                     };
                     let filename_link = |path: &LocalPath| -> Result<String> {
                         Ok(format!(
                             "<a href='{}'>{}</a>",
-                            ServePath::from_local_path(&database, &config, path)?.percent_encode(),
+                            ServePath::from_local_path(&db, &config, path)?.percent_encode(),
                             path.local_path()
                                 .file_name()
                                 .map(OsStr::to_string_lossy)
@@ -889,12 +962,10 @@ fn main() -> Result<()> {
                     let ancestors = request_local_path
                         .local_path()
                         .ancestors()
-                        .take_while(|parent| {
-                            *parent != database.file_dir.local_path().parent().unwrap()
-                        })
+                        .take_while(|parent| *parent != db.file_dir.local_path().parent().unwrap())
                         .collect::<Vec<_>>();
                     let Ok(title) = ancestors.into_iter().rev().skip(1).fold(
-                        full_link(&database.file_dir),
+                        full_link(&db.file_dir),
                         |acc, parent| {
                             acc.and_then(|acc| {
                                 let link = filename_link(&LocalPath::from(parent.to_path_buf()))?;
