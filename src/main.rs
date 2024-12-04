@@ -567,7 +567,6 @@ function filterListForSearchbox() {
     }
 
     if (everywhere.checked) {
-        console.log(searchbox.value, filelist);
         rows.style.display = 'none';
         for (file of filelist) {
             if (file.indexOf(searchbox.value) < 0) {
@@ -610,7 +609,6 @@ function refreshList() {
     if (everywhere.checked) {
         listurl = "Easily the dumbest code I've ever written";
     }
-    console.log(listurl);
 
     fetch(listurl + '?filelist').then(
         (response) => response.json()
