@@ -1,5 +1,5 @@
 use anyhow::Result;
-use image::{buffer::ConvertBuffer, io::Reader as ImageReader, ImageBuffer, Rgb};
+use image::{buffer::ConvertBuffer, ImageBuffer, ImageReader, Rgb};
 use notify::Watcher;
 use rouille::Response;
 use std::{
@@ -125,11 +125,19 @@ impl Page {
           grid-template-columns: 3em 3fr minmax(12em, 1fr);
         }}
       }}
+      #searchboxdiv {{
+        display: flex;
+        padding-bottom: 1em;
+      }}
+      #searchbox {{
+        flex-grow: 1;
+      }}
     </style>
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, minimal-ui">
   </head>
   <body>
     <h1>{}</h1>
+    <div id="searchboxdiv"><input id="searchbox" type="text" placeholder="🔎 search"/><input id="everywhere" type="checkbox"/><label for="everywhere">search everywhere?</label></div>
     {}
   </body>
 </html>
@@ -235,6 +243,37 @@ impl File {
                 let ext = ext.to_string_lossy().to_lowercase();
                 Self::THUMBNAILABLE_EXTENSIONS.contains(&ext.as_str())
             }
+        }
+    }
+
+    fn find(&self, local_path: &LocalPath) -> Option<&File> {
+        match self {
+            File::Dir(my_local_path, vec) => {
+                if my_local_path == local_path {
+                    Some(self)
+                } else {
+                    for file in vec.iter() {
+                        if let Some(found) = file.find(local_path) {
+                            return Some(found);
+                        }
+                    }
+                    None
+                }
+            }
+            File::File(my_local_path) => {
+                if my_local_path == local_path {
+                    Some(self)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    fn local_path(&self) -> &LocalPath {
+        match self {
+            File::Dir(local_path, _) => local_path,
+            File::File(local_path) => local_path,
         }
     }
 }
@@ -402,7 +441,7 @@ impl Database {
             page += "<div class=\"dir filename\">";
             page += &format!(
                 "<a href='{}'>{}</a>",
-                ServePath::from_local_path(&self, config, &path)?.percent_encode(),
+                ServePath::from_local_path(&self, config, &path)?.to_string(true),
                 basename
             );
             page += "</div>";
@@ -453,7 +492,7 @@ impl Database {
             page += "<div class=\"file filename\">";
             page += &format!(
                 "<a href='{}'>{}</a>",
-                ServePath::from_local_path(&self, config, &path)?.percent_encode(),
+                ServePath::from_local_path(&self, config, &path)?.to_string(true),
                 basename,
             );
             page += "</div>";
@@ -482,7 +521,7 @@ impl Database {
             page += "</div>\n";
         }
 
-        page += r#"</div>
+        page += &r#"</div>
 <script type="text/javascript">
 let sort = null;
 function setSort() {
@@ -516,7 +555,82 @@ created.onclick = () => { setSort(); doSort(sort, rows) };
 modified.onclick = () => { setSort(); doSort(sort, rows) };
 accessed.onclick = () => { setSort(); doSort(sort, rows) };
 
-</script>"#;
+let filenames = document.querySelectorAll(".filename");
+let filelist = null;
+let searchbox = document.getElementById("searchbox");
+let searchboxdiv = document.getElementById("searchboxdiv");
+let everywhere = document.getElementById("everywhere");
+
+function filterListForSearchbox() {
+    for (searchresult of document.querySelectorAll('.everywheresearch')) {
+        searchresult.remove();
+    }
+
+    if (everywhere.checked) {
+        console.log(searchbox.value, filelist);
+        rows.style.display = 'none';
+        for (file of filelist) {
+            if (file.indexOf(searchbox.value) < 0) {
+                continue;
+            }
+
+            let div = document.createElement('div');
+            div.classList.add('everywheresearch');
+
+            var total = "";
+            for (part of file.split('/')) {
+                if (part === "") {
+                    continue;
+                }
+
+                total += "/" + part;
+                let a = document.createElement('a');
+                a.href = total;
+                a.appendChild(document.createTextNode(part));
+                div.appendChild(document.createTextNode("/"));
+                div.appendChild(a);
+            }
+
+            rows.parentElement.appendChild(div);
+        }
+    } else {
+        rows.style.display = '';
+        for (filename of filenames) {
+            if (URL.parse(filename.childNodes[0].href).pathname.indexOf(searchbox.value) < 0) {
+                filename.parentElement.style.display = 'none';
+            } else {
+                filename.parentElement.style.display = '';
+            }
+        }
+    }
+}
+
+function refreshList() {
+    let listurl = window.location;
+    if (everywhere.checked) {
+        listurl = "Easily the dumbest code I've ever written";
+    }
+    console.log(listurl);
+
+    fetch(listurl + '?filelist').then(
+        (response) => response.json()
+    ).then(
+        (json) => {
+            filelist = json;
+            filterListForSearchbox();
+        }
+    );
+}
+
+searchboxdiv.onclick = refreshList;
+everywhere.onchange = refreshList;
+searchbox.oninput = filterListForSearchbox;
+
+</script>"#
+            .replace(
+                "Easily the dumbest code I've ever written",
+                config.page_root.as_deref().unwrap_or("/"),
+            );
 
         {
             let mut write = self
@@ -659,6 +773,56 @@ accessed.onclick = () => { setSort(); doSort(sort, rows) };
         }
         Ok(())
     }
+
+    fn file_list_in(&self, config: &Config, path: &LocalPath) -> Vec<String> {
+        let mut file_path = None;
+        if path == &self.file_dir {
+            file_path = Some(path);
+        } else {
+            for file in self.files.iter() {
+                if let Some(found) = file.find(path) {
+                    file_path = Some(found.local_path());
+                    break;
+                }
+            }
+        }
+        let Some(thefile) = file_path else {
+            return Vec::with_capacity(0);
+        };
+
+        let mut list = Vec::new();
+        fn walk(list: &mut Vec<String>, db: &Database, config: &Config, path: &LocalPath) {
+            let Ok(serve) = ServePath::from_local_path(db, config, path) else {
+                // TODO error xdd
+                tracing::error!("serve path");
+                return;
+            };
+
+            if path == &db.thumbnail_dir {
+                return;
+            }
+
+            list.push(serve.to_string(false));
+            if path.local_path().is_dir() {
+                let Ok(readdir) = path.local_path().read_dir() else {
+                    // TODO error xdd
+                    tracing::error!("couldn't read dir");
+                    return;
+                };
+                for child in readdir {
+                    let Ok(child) = child else {
+                        // TODO error xdd
+                        tracing::error!("couldn't read entry");
+                        continue;
+                    };
+
+                    walk(list, db, config, &LocalPath(child.path()));
+                }
+            }
+        }
+        walk(&mut list, self, config, thefile);
+        list
+    }
 }
 
 #[derive(Debug)]
@@ -716,7 +880,16 @@ impl Config {
             .map(|page| {
                 page.as_str()
                     .map(String::from)
-                    .ok_or_else(|| af!("page_root must be a string in config file {}", config_path))
+                    .map(|value| {
+                        if !value.starts_with("/") {
+                            format!("/{}", value)
+                        } else {
+                            value
+                        }
+                    })
+                    .ok_or_else(|| {
+                        af!("page_root must be a string in config file {}", config_path)
+                    })
             })
             .transpose()?;
 
@@ -929,19 +1102,25 @@ fn main() -> Result<()> {
         );
 
         if request_local_path.local_path().is_dir() {
+            if let Some(_) = request.get_param("filelist") {
+                tracing::debug!("asked for file list");
+                let file_list = db.file_list_in(&config, &request_local_path);
+                return Response::json(&file_list);
+            }
+
             if let Ok(maybe_content) = db.get_content_for(&config, &url_serve_path) {
                 if let Some(content) = maybe_content {
                     let full_link = |path: &LocalPath| -> Result<String> {
                         Ok(format!(
                             "<a href='{}'>{}</a>",
-                            ServePath::from_local_path(&db, &config, path)?.percent_encode(),
+                            ServePath::from_local_path(&db, &config, path)?.to_string(true),
                             path.local_path().display(),
                         ))
                     };
                     let filename_link = |path: &LocalPath| -> Result<String> {
                         Ok(format!(
                             "<a href='{}'>{}</a>",
-                            ServePath::from_local_path(&db, &config, path)?.percent_encode(),
+                            ServePath::from_local_path(&db, &config, path)?.to_string(true),
                             path.local_path()
                                 .file_name()
                                 .map(OsStr::to_string_lossy)

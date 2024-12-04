@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
-pub struct LocalPath(PathBuf);
+pub struct LocalPath(pub PathBuf);
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct ServePath(PathBuf);
@@ -49,7 +49,7 @@ impl LocalPath {
 }
 
 impl ServePath {
-    pub fn percent_encode(&self) -> String {
+    pub fn to_string(&self, percent_encode: bool) -> String {
         use std::path::Component;
         let flat = |part| match part {
             Component::RootDir | Component::Prefix(_) | Component::CurDir => None,
@@ -62,7 +62,11 @@ impl ServePath {
 
         for (i, part) in self.0.components().flat_map(flat).enumerate() {
             let part = part.to_string_lossy().to_string();
-            encoded += &crate::percent_encode(&part);
+            if percent_encode {
+                encoded += &crate::percent_encode(&part);
+            } else {
+                encoded += &part;
+            }
             if i + 1 != num_parts {
                 encoded += "/";
             }
