@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf8" />
+    <title>{{ tab_title }}</title>
+    <style>
+      h1 { color: green; }
+      .icon > img {
+        max-height: 3em;
+        max-width: 3em;
+      }
+      .filetable {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 1px;
+        background: green;
+      }
+      .row {
+        display: grid;
+        gap: 1px;
+        grid-template-columns: 3em 3fr repeat(3, 1fr);
+      }
+      .row > div {
+        background: white;
+        padding: 0.25em;
+      }
+      .row > .filename {
+        word-break: break-all;
+      }
+      .icon {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      @media (max-width: 1150px) {
+        .modified, .accessed {
+          display: none;
+        }
+        .row {
+          grid-template-columns: 3em 3fr minmax(12em, 1fr);
+        }
+      }
+      #searchboxdiv {
+        display: flex;
+        padding-bottom: 1em;
+      }
+      #searchbox {
+        flex-grow: 1;
+      }
+    </style>
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, minimal-ui">
+  </head>
+  <body>
+    <h1>
+      {% for part in page_title_parts %}
+        <a href="{{ part.href }}">{{ part.path }}</a>
+        {% if not part.last %}
+          /
+        {% endif %}
+      {% endfor %}
+    </h1>
+    <div id="searchboxdiv">
+      <input id="searchbox" type="text" placeholder="🔎 search"/>
+      <input id="everywhere" type="checkbox"/>
+      <label for="everywhere">search everywhere?</label>
+    </div>
+    <div class="filetable">
+      <div class="header row">
+        <div></div>
+        <div class="header filename">filename</div>
+        <div class="header created">created</div>
+        <div class="header modified">modified</div>
+        <div class="header accessed">accessed</div>
+      </div>
+      {% for dir in dirs %}
+        <div class="dir row">
+          <div class="dir icon">📁</div>
+          <div class="dir filename">
+            <a href="{{ dir.filename }}">{{ dir.basename }}</a>
+          </div>
+          <div class="dir created">{{ dir.created }}</div>
+          <div class="dir modified">{{ dir.modified }}</div>
+          <div class="dir accessed">{{ dir.accessed }}</div>
+        </div>
+      {% endfor %}
+      {% for file in files %}
+        <div class="file row">
+          <div class="file icon">
+            {% if file.thumbnail_path %}
+              <img src="{{ page_root }}?thumbnail={{ file.thumbnail_path }}" />
+            {% else %}
+              📃
+            {% endif %}
+          </div>
+          <div class="file filename">
+            <a href="{{ file.filename }}">{{ file.basename }}</a>
+          </div>
+          <div class="file created">{{ file.created }}</div>
+          <div class="file modified">{{ file.modified }}</div>
+          <div class="file accessed">{{ file.accessed }}</div>
+        </div>
+      {% endfor %}
+    </div>
+    <script type="text/javascript">
+      let sort = null;
+      function setSort() {
+          if (sort == null) {
+              sort = "mostRecentFirst";
+          } else if (sort == "mostRecentFirst") {
+              sort = "mostRecentLast";
+          } else {
+              sort = "mostRecentFirst";
+          }
+      }
+
+      function doSort(direction, list) {
+          [...list.children].sort((a, b) => {
+              if (direction == "mostRecentFirst") {
+                  return new Date(a.children[3].innerText) < new Date(b.children[3].innerText);
+              } else if (direction == "mostRecentLast") {
+                  return new Date(a.children[3].innerText) > new Date(b.children[3].innerText);
+              } else {
+                  return false;
+              }
+          }).forEach(child => list.appendChild(child));
+      }
+
+      let rows = document.querySelector(".filetable");
+      //let filename = document.querySelector(".header.filename");
+      let created = document.querySelector(".header.created");
+      let modified = document.querySelector(".header.modified");
+      let accessed = document.querySelector(".header.accessed");
+
+      created.onclick = () => { setSort(); doSort(sort, rows) };
+      modified.onclick = () => { setSort(); doSort(sort, rows) };
+      accessed.onclick = () => { setSort(); doSort(sort, rows) };
+
+      let filenames = document.querySelectorAll(".filename");
+      let filelist = null;
+      let searchbox = document.getElementById("searchbox");
+      let searchboxdiv = document.getElementById("searchboxdiv");
+      let everywhere = document.getElementById("everywhere");
+
+      function filterListForSearchbox() {
+          for (searchresult of document.querySelectorAll('.everywheresearch')) {
+              searchresult.remove();
+          }
+
+          if (everywhere.checked) {
+              rows.style.display = 'none';
+              for (file of filelist) {
+                  if (file.indexOf(searchbox.value) < 0) {
+                      continue;
+                  }
+
+                  let div = document.createElement('div');
+                  div.classList.add('everywheresearch');
+
+                  var total = "";
+                  for (part of file.split('/')) {
+                      if (part === "") {
+                          continue;
+                      }
+
+                      total += "/" + part;
+                      let a = document.createElement('a');
+                      a.href = total;
+                      a.appendChild(document.createTextNode(part));
+                      div.appendChild(document.createTextNode("/"));
+                      div.appendChild(a);
+                  }
+
+                  rows.parentElement.appendChild(div);
+              }
+          } else {
+              rows.style.display = '';
+              for (filename of filenames) {
+                  if (URL.parse(filename.childNodes[0].href).pathname.indexOf(searchbox.value) < 0) {
+                      filename.parentElement.style.display = 'none';
+                  } else {
+                      filename.parentElement.style.display = '';
+                  }
+              }
+          }
+      }
+
+      function refreshList() {
+          let listurl = window.location;
+          if (everywhere.checked) {
+              listurl = "{{ page_root }}";
+          }
+
+          fetch(listurl + '?filelist').then(
+              (response) => response.json()
+          ).then(
+              (json) => {
+                  filelist = json;
+                  filterListForSearchbox();
+              }
+          );
+      }
+
+      searchboxdiv.onclick = refreshList;
+      everywhere.onchange = refreshList;
+      searchbox.oninput = filterListForSearchbox;
+    </script>
+  </body>
+</html>

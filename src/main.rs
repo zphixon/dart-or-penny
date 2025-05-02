@@ -1,19 +1,20 @@
 use anyhow::Result;
 use image::{buffer::ConvertBuffer, ImageBuffer, ImageReader, Rgb};
-use notify::Watcher;
 use rouille::Response;
+use serde::Serialize;
 use std::{
-    borrow::Cow,
     collections::HashMap,
-    ffi::OsStr,
+    error::Error,
     fs::File as FsFile,
     path::{Path, PathBuf},
-    sync::RwLock,
 };
+use tera::{Context, Tera};
 
 mod path;
 
 use path::{LocalPath, ServePath, ThumbnailPath};
+
+const PAGE_TEMPLATE: &str = include_str!("./page.html.tera");
 
 #[macro_export]
 macro_rules! af {
@@ -32,144 +33,16 @@ fn percent_encode(s: &str) -> String {
     encoded.to_string()
 }
 
-#[derive(Default)]
-struct Page {
-    tab_title: String,
-    title: String,
-    content: String,
-    code: Option<u16>,
+fn not_found() -> Response {
+    Response::text("Not found").with_status_code(404)
 }
 
-impl Page {
-    fn with_tab_title<S: ToString>(self, tab_title: S) -> Self {
-        Page {
-            tab_title: tab_title.to_string(),
-            ..self
-        }
-    }
+fn bad_request() -> Response {
+    Response::text("Bad request").with_status_code(400)
+}
 
-    fn with_title<S: ToString>(self, title: S) -> Self {
-        Page {
-            title: title.to_string(),
-            ..self
-        }
-    }
-
-    fn with_content<S: ToString>(self, content: S) -> Self {
-        Page {
-            content: content.to_string(),
-            ..self
-        }
-    }
-
-    fn with_paragraph<S: ToString>(self, para: S) -> Self {
-        Page {
-            content: format!("<p>{}</p>", para.to_string()),
-            ..self
-        }
-    }
-
-    fn with_code(self, code: u16) -> Self {
-        Page {
-            code: Some(code),
-            ..self
-        }
-    }
-
-    fn render(self, _config: &Config) -> Response {
-        let title = if let Some(code) = self.code {
-            format!("{}: {}", code, self.title)
-        } else {
-            self.title
-        };
-
-        Response::html(format!(
-            r#"<!DOCTYPE html>
-<html>
-  <head>
-    <title>{}</title>
-    <style>
-      h1 {{ color: green; }}
-      .icon > img {{
-        max-height: 3em;
-        max-width: 3em;
-      }}
-      .filetable {{
-        display: grid;
-        grid-template-columns: 1fr;
-        gap: 1px;
-        background: green;
-      }}
-      .row {{
-        display: grid;
-        gap: 1px;
-        grid-template-columns: 3em 3fr repeat(3, 1fr);
-      }}
-      .row > div {{
-        background: white;
-        padding: 0.25em;
-      }}
-      .row > .filename {{
-        word-break: break-all;
-      }}
-      .icon {{
-        display: flex;
-        align-items: center;
-        justify-content: center;
-      }}
-      @media (max-width: 1150px) {{
-        .modified, .accessed {{
-          display: none;
-        }}
-        .row {{
-          grid-template-columns: 3em 3fr minmax(12em, 1fr);
-        }}
-      }}
-      #searchboxdiv {{
-        display: flex;
-        padding-bottom: 1em;
-      }}
-      #searchbox {{
-        flex-grow: 1;
-      }}
-    </style>
-    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, minimal-ui">
-  </head>
-  <body>
-    <h1>{}</h1>
-    <div id="searchboxdiv"><input id="searchbox" type="text" placeholder="🔎 search"/><input id="everywhere" type="checkbox"/><label for="everywhere">search everywhere?</label></div>
-    {}
-  </body>
-</html>
-"#,
-            self.tab_title, title, self.content
-        ))
-        .with_status_code(self.code.unwrap_or(200))
-    }
-
-    fn not_found(config: &Config) -> Response {
-        Self::default()
-            .with_title("not found")
-            .with_paragraph("skill issue")
-            .with_code(404)
-            .render(config)
-    }
-
-    fn bad_request(config: &Config) -> Response {
-        Self::default()
-            .with_title("bad request")
-            .with_paragraph("skill issue")
-            .with_code(400)
-            .render(config)
-    }
-
-    fn internal_error(config: &Config) -> Response {
-        Self::default()
-            .with_title("internal server error")
-            .with_paragraph("skill issue (on our end)")
-            .with_code(500)
-            .render(config)
-    }
+fn internal_error() -> Response {
+    Response::text("Internal server error").with_status_code(500)
 }
 
 fn thumbnail_path(of: &Path, thumbnail_dir: &LocalPath) -> ThumbnailPath {
@@ -322,7 +195,6 @@ pub struct Database {
     files: Vec<File>,
     thumbnail_dir: LocalPath,
     thumbnails: HashMap<LocalPath, ThumbnailPath>,
-    pages: RwLock<HashMap<LocalPath, String>>,
 }
 
 impl Database {
@@ -331,47 +203,10 @@ impl Database {
         Ok(FsFile::open(thumbnail_path)?)
     }
 
-    fn clear_cache(&self) -> Result<()> {
-        let mut write = self
-            .pages
-            .write()
-            .map_err(|e| af!("couldn't lock page cache for clearing: {}", e))?;
-        write.clear();
-        Ok(())
-    }
-
-    fn clear_cache_for(&self, path: &Path) -> Result<()> {
-        let mut write = self
-            .pages
-            .write()
-            .map_err(|e| af!("couldn't lock page cache for clearing: {}", e))?;
-        let mut lp = PathBuf::from(path);
-        if !lp.is_dir() {
-            lp.pop();
-        }
-        if write.remove(&LocalPath::from(lp.clone())).is_none() {
-            tracing::debug!("not cached, could not remove {}", lp.display());
-        } else {
-            tracing::debug!("removed {}", lp.display());
-        }
-        Ok(())
-    }
-
-    fn get_content_for(&self, config: &Config, serve_dir: &ServePath) -> Result<Option<String>> {
+    fn get_context_for(&self, config: &Config, serve_dir: &ServePath) -> Result<Context> {
         let local_dir = LocalPath::from_serve_path(&self, config, serve_dir)?;
 
-        {
-            let read = self
-                .pages
-                .read()
-                .map_err(|e| af!("couldn't lock page cache for reading: {}", e))?;
-
-            if read.contains_key(&local_dir) {
-                return Ok(read.get(&local_dir).cloned());
-            }
-        }
-
-        let mut page = String::from("<div class=\"filetable\">");
+        let mut context = Context::new();
 
         let mut dirs = Vec::new();
         let mut files = Vec::new();
@@ -430,227 +265,71 @@ impl Database {
             )
         }
 
-        page +=
-            "<div class=\"header row\"><div></div><div>filename</div><div class=\"header created\">created</div><div class=\"header modified\">modified</div><div class=\"header accessed\">accessed</div></div>\n";
+        #[derive(Serialize)]
+        struct PageItem {
+            basename: String,
+            filename: String,
+            created: String,
+            modified: String,
+            accessed: String,
+            thumbnail_path: Option<String>,
+        }
 
+        let mut serde_dirs = Vec::new();
         for (path, basename) in dirs.into_iter() {
-            page += "<div class=\"dir row\">";
-
-            page += "<div class=\"dir icon\">📁</div>";
-
-            page += "<div class=\"dir filename\">";
-            page += &format!(
-                "<a href='{}'>{}</a>",
-                ServePath::from_local_path(&self, config, &path)?.to_string(true),
-                basename
-            );
-            page += "</div>";
-
-            page += "<div class=\"dir created\">";
             let meta = path.local_path().metadata();
-            if let Ok(created) = meta.and_then(|meta| meta.created()) {
-                page += &timestamp(created);
-            }
-            page += "</div>";
+            let (created, modified, accessed) = meta
+                .map(|meta| {
+                    (
+                        meta.created().map(timestamp).unwrap_or_default(),
+                        meta.modified().map(timestamp).unwrap_or_default(),
+                        meta.accessed().map(timestamp).unwrap_or_default(),
+                    )
+                })
+                .unwrap_or_default();
 
-            page += "<div class=\"dir modified\">";
-            let meta = path.local_path().metadata();
-            if let Ok(modified) = meta.and_then(|meta| meta.modified()) {
-                page += &timestamp(modified);
-            }
-            page += "</div>";
-
-            page += "<div class=\"dir accessed\">";
-            let meta = path.local_path().metadata();
-            if let Ok(accessed) = meta.and_then(|meta| meta.accessed()) {
-                page += &timestamp(accessed);
-            }
-            page += "</div>";
-
-            page += "</div>\n";
-        }
-
-        for (path, basename) in files.into_iter() {
-            page += "<div class=\"file row\">";
-
-            page += "<div class=\"file icon\"";
-            if let Some(thumbnail_path) = self.thumbnails.get(&path) {
-                page += &format!(
-                    "><img src='{}?thumbnail={}'>",
-                    config.page_root.as_ref().map(String::as_str).unwrap_or(""),
-                    thumbnail_path
-                        .thumbnail_path()
-                        .file_name()
-                        .map(OsStr::to_string_lossy)
-                        .unwrap_or_else(|| Cow::Borrowed("<broken filename>"))
-                );
-            } else {
-                page += ">📃";
-            }
-            page += "</div>";
-
-            page += "<div class=\"file filename\">";
-            page += &format!(
-                "<a href='{}'>{}</a>",
-                ServePath::from_local_path(&self, config, &path)?.to_string(true),
+            serde_dirs.push(PageItem {
                 basename,
-            );
-            page += "</div>";
+                created,
+                modified,
+                accessed,
+                filename: ServePath::from_local_path(&self, config, &path)?.to_string(true),
+                thumbnail_path: None,
+            });
+        }
 
-            page += "<div class=\"file created\">";
+        let mut serde_files = Vec::new();
+        for (path, basename) in files.into_iter() {
             let meta = path.local_path().metadata();
-            if let Ok(created) = meta.and_then(|meta| meta.created()) {
-                page += &timestamp(created);
-            }
-            page += "</div>";
+            let (created, modified, accessed) = meta
+                .map(|meta| {
+                    (
+                        meta.created().map(timestamp).unwrap_or_default(),
+                        meta.modified().map(timestamp).unwrap_or_default(),
+                        meta.accessed().map(timestamp).unwrap_or_default(),
+                    )
+                })
+                .unwrap_or_default();
 
-            page += "<div class=\"file modified\">";
-            let meta = path.local_path().metadata();
-            if let Ok(modified) = meta.and_then(|meta| meta.modified()) {
-                page += &timestamp(modified);
-            }
-            page += "</div>";
-
-            page += "<div class=\"file accessed\">";
-            let meta = path.local_path().metadata();
-            if let Ok(accessed) = meta.and_then(|meta| meta.accessed()) {
-                page += &timestamp(accessed);
-            }
-            page += "</div>";
-
-            page += "</div>\n";
+            serde_files.push(PageItem {
+                basename,
+                created,
+                modified,
+                accessed,
+                filename: ServePath::from_local_path(&self, config, &path)?.to_string(true),
+                thumbnail_path: self
+                    .thumbnails
+                    .get(&path)
+                    .into_iter()
+                    .flat_map(|thumb| thumb.thumbnail_path().file_name())
+                    .map(|thumb| thumb.to_string_lossy().into_owned())
+                    .next(),
+            });
         }
 
-        page += &r#"</div>
-<script type="text/javascript">
-let sort = null;
-function setSort() {
-    if (sort == null) {
-        sort = "mostRecentFirst";
-    } else if (sort == "mostRecentFirst") {
-        sort = "mostRecentLast";
-    } else {
-        sort = "mostRecentFirst";
-    }
-}
-
-function doSort(direction, list) {
-    [...list.children].sort((a, b) => {
-        if (direction == "mostRecentFirst") {
-            return new Date(a.children[3].innerText) < new Date(b.children[3].innerText);
-        } else if (direction == "mostRecentLast") {
-            return new Date(a.children[3].innerText) > new Date(b.children[3].innerText);
-        } else {
-            return false;
-        }
-    }).forEach(child => list.appendChild(child));
-}
-
-let rows = document.querySelector(".filetable");
-let created = document.querySelector(".header.created");
-let modified = document.querySelector(".header.modified");
-let accessed = document.querySelector(".header.accessed");
-
-created.onclick = () => { setSort(); doSort(sort, rows) };
-modified.onclick = () => { setSort(); doSort(sort, rows) };
-accessed.onclick = () => { setSort(); doSort(sort, rows) };
-
-let filenames = document.querySelectorAll(".filename");
-let filelist = null;
-let searchbox = document.getElementById("searchbox");
-let searchboxdiv = document.getElementById("searchboxdiv");
-let everywhere = document.getElementById("everywhere");
-
-function filterListForSearchbox() {
-    for (searchresult of document.querySelectorAll('.everywheresearch')) {
-        searchresult.remove();
-    }
-
-    if (everywhere.checked) {
-        rows.style.display = 'none';
-        for (file of filelist) {
-            if (file.indexOf(searchbox.value) < 0) {
-                continue;
-            }
-
-            let div = document.createElement('div');
-            div.classList.add('everywheresearch');
-
-            var total = "";
-            for (part of file.split('/')) {
-                if (part === "") {
-                    continue;
-                }
-
-                total += "/" + part;
-                let a = document.createElement('a');
-                a.href = total;
-                a.appendChild(document.createTextNode(part));
-                div.appendChild(document.createTextNode("/"));
-                div.appendChild(a);
-            }
-
-            rows.parentElement.appendChild(div);
-        }
-    } else {
-        rows.style.display = '';
-        for (filename of filenames) {
-            if (URL.parse(filename.childNodes[0].href).pathname.indexOf(searchbox.value) < 0) {
-                filename.parentElement.style.display = 'none';
-            } else {
-                filename.parentElement.style.display = '';
-            }
-        }
-    }
-}
-
-function refreshList() {
-    let listurl = window.location;
-    if (everywhere.checked) {
-        listurl = "Easily the dumbest code I've ever written";
-    }
-
-    fetch(listurl + '?filelist').then(
-        (response) => response.json()
-    ).then(
-        (json) => {
-            filelist = json;
-            filterListForSearchbox();
-        }
-    );
-}
-
-searchboxdiv.onclick = refreshList;
-everywhere.onchange = refreshList;
-searchbox.oninput = filterListForSearchbox;
-
-</script>"#
-            .replace(
-                "Easily the dumbest code I've ever written",
-                config.page_root.as_deref().unwrap_or("/"),
-            );
-
-        {
-            let mut write = self
-                .pages
-                .write()
-                .map_err(|e| af!("couldn't lock page cache for writing: {}", e))?;
-            write.insert(local_dir.clone(), page);
-        }
-
-        let read = self
-            .pages
-            .read()
-            .map_err(|e| af!("couldn't lock page cache for reading: {}", e))?;
-
-        if read.contains_key(&local_dir) {
-            Ok(read.get(&local_dir).cloned())
-        } else {
-            Err(af!(
-                "couldn't make page for {} for some reason?",
-                local_dir.local_path().display()
-            ))
-        }
+        context.insert("dirs", &serde_dirs);
+        context.insert("files", &serde_files);
+        Ok(context)
     }
 
     fn read_config_and_make_dirs(config: &Config) -> Result<Database> {
@@ -710,7 +389,6 @@ searchbox.oninput = filterListForSearchbox;
             files,
             thumbnail_dir,
             thumbnails,
-            pages: Default::default(),
         })
     }
 
@@ -833,7 +511,6 @@ pub struct Config {
     rebuild_thumbnails: bool,
     page_root: Option<String>,
     auth_realm: Option<String>,
-    cache_clear_interval: u64,
 }
 
 impl Config {
@@ -885,9 +562,7 @@ impl Config {
                             value
                         }
                     })
-                    .ok_or_else(|| {
-                        af!("page_root must be a string in config file {}", config_path)
-                    })
+                    .ok_or_else(|| af!("page_root must be a string in config file {}", config_path))
             })
             .transpose()?;
 
@@ -917,13 +592,6 @@ impl Config {
             })
             .transpose()?;
 
-        let cache_clear_interval = toml
-            .get("cache_clear_interval")
-            .iter()
-            .flat_map(|cci| cci.as_integer())
-            .next()
-            .unwrap_or(60 * 60) as u64;
-
         Ok(Config {
             bind,
             auth,
@@ -933,7 +601,6 @@ impl Config {
             rebuild_thumbnails: false,
             page_root,
             auth_realm,
-            cache_clear_interval,
         })
     }
 }
@@ -960,35 +627,9 @@ fn main() -> Result<()> {
     // hmmmmmmm
     let db: &Database = Box::leak(Box::new(database));
 
-    let file_dir = config.file_dir.clone();
-    let thumb_dir = Box::leak(Box::new(db.thumbnail_dir.clone()));
-    std::thread::spawn(move || {
-        let mut watcher = notify::recommended_watcher(|r: Result<notify::Event, _>| match r {
-            Ok(ev) => {
-                for path in ev
-                    .paths
-                    .iter()
-                    .filter(|path| !path.starts_with(thumb_dir.local_path()))
-                {
-                    tracing::info!("clearing cache for {}, got fs update", path.display());
-                    if db.clear_cache_for(path).is_err() {
-                        tracing::error!("could not clear cache");
-                    }
-                }
-            }
-            _ => {}
-        })
-        .expect("could not create fs watcher");
-
-        watcher
-            .watch(Path::new(&file_dir), notify::RecursiveMode::Recursive)
-            .expect("could not watch file dir");
-
-        loop {
-            std::thread::sleep(std::time::Duration::from_secs(config.cache_clear_interval));
-            db.clear_cache().expect("could not clear entire cache");
-        }
-    });
+    let mut tera = Tera::default();
+    tera.add_raw_template("page", PAGE_TEMPLATE).unwrap();
+    let tera: &Tera = Box::leak(Box::new(tera));
 
     rouille::start_server(config.bind.clone(), move |request| {
         let remote = request
@@ -1003,24 +644,24 @@ fn main() -> Result<()> {
                 let auth = auth_value.split(" ").collect::<Vec<_>>();
                 if auth.len() != 2 {
                     tracing::warn!("broken auth header: {}", auth_value);
-                    return Page::bad_request(&config);
+                    return bad_request();
                 }
                 if auth[0] != "Basic" {
                     tracing::warn!("broken auth type: {}", auth[0]);
-                    return Page::bad_request(&config);
+                    return bad_request();
                 }
                 use base64::Engine;
                 let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&auth[1]) else {
                     tracing::warn!("broken auth: {}", auth[1]);
-                    return Page::bad_request(&config);
+                    return bad_request();
                 };
                 let Ok(auth) = std::str::from_utf8(&bytes) else {
                     tracing::warn!("broken auth utf8: {}", auth[1]);
-                    return Page::bad_request(&config);
+                    return bad_request();
                 };
                 if auth != config_auth {
                     tracing::warn!("incorrect user/pass from {}: {}", remote, auth);
-                    return Page::bad_request(&config);
+                    return bad_request();
                 }
             } else {
                 return Response::text("need auth!")
@@ -1043,7 +684,7 @@ fn main() -> Result<()> {
             if let Some(thumbnail) = request.get_param("thumbnail") {
                 let Ok(thumb) = db.open_thumbnail(&thumbnail) else {
                     tracing::error!("couldn't read thumbnail {}", thumbnail);
-                    return Page::internal_error(&config);
+                    return internal_error();
                 };
                 return Response::from_file("image/jpeg", thumb)
                     .with_unique_header("Cache-Control", "public, max-age=604800, immutable");
@@ -1053,7 +694,7 @@ fn main() -> Result<()> {
         let url = if let Some(root) = config.page_root.as_ref() {
             if !full_url.starts_with(root) {
                 tracing::debug!("url didn't start with page root");
-                return Page::bad_request(&config);
+                return bad_request();
             }
 
             &full_url
@@ -1064,7 +705,7 @@ fn main() -> Result<()> {
         let url_serve_path = ServePath::from(PathBuf::from(url));
         let Ok(request_local_path) = LocalPath::from_serve_path(&db, &config, &url_serve_path)
         else {
-            return Page::bad_request(&config);
+            return bad_request();
         };
 
         tracing::debug!(
@@ -1090,7 +731,7 @@ fn main() -> Result<()> {
                     .unwrap_or(PathBuf::from("(couldn't canonicalize)"))
                     .display()
             );
-            return Page::bad_request(&config);
+            return bad_request();
         }
 
         tracing::debug!(
@@ -1106,57 +747,72 @@ fn main() -> Result<()> {
                 return Response::json(&file_list);
             }
 
-            if let Ok(maybe_content) = db.get_content_for(&config, &url_serve_path) {
-                if let Some(content) = maybe_content {
-                    let full_link = |path: &LocalPath| -> Result<String> {
-                        Ok(format!(
-                            "<a href='{}'>{}</a>",
-                            ServePath::from_local_path(&db, &config, path)?.to_string(true),
-                            path.local_path().display(),
-                        ))
-                    };
-                    let filename_link = |path: &LocalPath| -> Result<String> {
-                        Ok(format!(
-                            "<a href='{}'>{}</a>",
-                            ServePath::from_local_path(&db, &config, path)?.to_string(true),
-                            path.local_path()
-                                .file_name()
-                                .map(OsStr::to_string_lossy)
-                                .map(|s| s.to_string())
-                                .unwrap_or("???".into())
-                        ))
-                    };
-                    let ancestors = request_local_path
-                        .local_path()
-                        .ancestors()
-                        .take_while(|parent| *parent != db.file_dir.local_path().parent().unwrap())
-                        .collect::<Vec<_>>();
-                    let Ok(title) = ancestors.into_iter().rev().skip(1).fold(
-                        full_link(&db.file_dir),
-                        |acc, parent| {
-                            acc.and_then(|acc| {
-                                let link = filename_link(&LocalPath::from(parent.to_path_buf()))?;
-                                Ok(acc + "/" + &link)
-                            })
-                        },
-                    ) else {
-                        return Page::internal_error(&config);
-                    };
+            if let Ok(mut context) = db.get_context_for(&config, &url_serve_path) {
+                let ancestors = request_local_path
+                    .local_path()
+                    .ancestors()
+                    .take_while(|parent| *parent != db.file_dir.local_path().parent().unwrap())
+                    .collect::<Vec<_>>();
 
-                    Page::default()
-                        .with_tab_title(request_local_path.local_path().display())
-                        .with_title(title)
-                        .with_content(content)
-                        .render(&config)
-                } else {
-                    Page::not_found(&config)
+                #[derive(Serialize, Debug)]
+                struct TitlePart {
+                    href: String,
+                    path: String,
+                    last: bool,
+                }
+
+                let Ok(mut title_parts) = ancestors
+                    .into_iter()
+                    .rev()
+                    .enumerate()
+                    .map(|(i, unc)| {
+                        let path = if i == 0 {
+                            unc.display().to_string()
+                        } else {
+                            unc.file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .into_owned()
+                        };
+                        Ok::<_, anyhow::Error>(TitlePart {
+                            href: ServePath::from_local_path(
+                                &db,
+                                &config,
+                                &LocalPath::from(unc.to_path_buf()),
+                            )?
+                            .to_string(true),
+                            path,
+                            last: false,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                else {
+                    return internal_error();
+                };
+
+                if let Some(last) = title_parts.last_mut() {
+                    last.last = true;
+                };
+
+                context.insert(
+                    "tab_title",
+                    &request_local_path.local_path().display().to_string(),
+                );
+                context.insert("page_title_parts", &title_parts);
+                context.insert("page_root", config.page_root.as_deref().unwrap_or(""));
+
+                match tera.render("page", &context) {
+                    Ok(page) => Response::from_data("text/html", page),
+                    Err(err) => {
+                        Response::text(format!("frigk: {:?}", err.source())).with_status_code(500)
+                    }
                 }
             } else {
-                Page::internal_error(&config)
+                internal_error()
             }
         } else {
             let Ok(file) = std::fs::File::open(request_local_path.local_path()) else {
-                return Page::not_found(&config);
+                return not_found();
             };
 
             let extension = request_local_path
