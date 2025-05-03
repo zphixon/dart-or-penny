@@ -3,6 +3,3 @@ page_root = '/files'
 thumbnail_dir = 'eg/.dop'
 file_dir = 'eg'
 thumbnail_size = 75
-
-#auth = 'zack:idk'
-#auth_realm = 'dop'

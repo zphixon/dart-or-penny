@@ -135,7 +135,7 @@
       modified.onclick = () => { setSort(); doSort(sort, rows) };
       accessed.onclick = () => { setSort(); doSort(sort, rows) };
 
-      let filenames = document.querySelectorAll(".filename");
+      let filenames = document.querySelectorAll(".filename > a");
       let filelist = null;
       let searchbox = document.getElementById("searchbox");
       let searchboxdiv = document.getElementById("searchboxdiv");
@@ -175,10 +175,10 @@
           } else {
               rows.style.display = '';
               for (filename of filenames) {
-                  if (URL.parse(filename.childNodes[0].href).pathname.indexOf(searchbox.value) < 0) {
-                      filename.parentElement.style.display = 'none';
+                  if (URL.parse(filename.href).pathname.indexOf(searchbox.value) < 0) {
+                      filename.parentElement.parentElement.style.display = 'none';
                   } else {
-                      filename.parentElement.style.display = '';
+                      filename.parentElement.parentElement.style.display = '';
                   }
               }
           }
