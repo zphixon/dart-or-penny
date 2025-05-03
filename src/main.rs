@@ -656,6 +656,9 @@ struct FileHandlerRequest {
     filelist: Option<String>,
 }
 
+const THUMBNAIL_CACHE_POLICY: &str = "private, max-age=604800, immutable";
+const DIR_PAGE_CACHE_POLICY: &str = "private, max-age=3600, must-revalidate";
+
 async fn file_handler(
     State(state): State<AppState>,
     Query(request): Query<FileHandlerRequest>,
@@ -694,7 +697,7 @@ async fn file_handler(
         return (
             [
                 ("Content-Type", "image/jpeg"),
-                ("Cache-Control", "public, max-age=604800, immutable"),
+                ("Cache-Control", THUMBNAIL_CACHE_POLICY),
             ],
             data,
         )
@@ -795,7 +798,9 @@ async fn file_handler(
             context.insert("page_root", state.config.page_root.as_deref().unwrap_or(""));
 
             match state.tera.render("page", &context) {
-                Ok(page) => Html(page).into_response(),
+                Ok(page) => {
+                    ([("Cache-Control", DIR_PAGE_CACHE_POLICY)], Html(page)).into_response()
+                }
                 Err(err) => (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("frigk: {:?}", err.source()),
