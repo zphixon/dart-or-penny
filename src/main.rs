@@ -1,9 +1,8 @@
 use axum::{
-    body::Body,
-    extract::{Path as ExtractPath, Query, Request, State},
-    http::{header, HeaderMap, HeaderName, StatusCode, Uri},
+    extract::{Query, Request, State},
+    http::{header, StatusCode, Uri},
     middleware::Next,
-    response::{AppendHeaders, Html, IntoResponse, Response},
+    response::{Html, IntoResponse, Response},
     Json, Router,
 };
 use axum_extra::{
@@ -12,22 +11,19 @@ use axum_extra::{
 };
 use image::{buffer::ConvertBuffer, ImageBuffer, ImageReader, Rgb};
 use percent_encoding::percent_decode;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     error::Error as StdError,
     fmt::Display,
-    fs::File as FsFile,
     net::SocketAddr,
     ops::Deref,
     path::{Path, PathBuf},
-    str::FromStr,
     sync::Arc,
 };
 use tera::{Context as TeraContext, Tera};
 use thiserror::Error;
 use tokio::{io::AsyncReadExt, net::TcpListener};
-use tower_http::{classify::StatusInRangeAsFailures, services::ServeDir};
 
 const PAGE_TEMPLATE: &str = include_str!("./page.html.tera");
 
@@ -37,8 +33,6 @@ enum ErrorInner {
     StripPrefix(#[from] std::path::StripPrefixError),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("File not found: {display}", display = .0.display())]
-    FileNotFound(PathBuf),
     #[error("Thumbnail dir must be dir")]
     ThumbnailDirNotDir,
     #[error("File dir must be dir")]
