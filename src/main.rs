@@ -1,14 +1,16 @@
-use anyhow::Result;
 use image::{buffer::ConvertBuffer, ImageBuffer, ImageReader, Rgb};
 use rouille::Response;
 use serde::Serialize;
 use std::{
     collections::HashMap,
-    error::Error,
+    error::Error as StdError,
+    fmt::Display,
     fs::File as FsFile,
+    ops::Deref,
     path::{Path, PathBuf},
 };
-use tera::{Context, Tera};
+use tera::{Context as TeraContext, Tera};
+use thiserror::Error;
 
 mod path;
 
@@ -16,13 +18,129 @@ use path::{LocalPath, ServePath, ThumbnailPath};
 
 const PAGE_TEMPLATE: &str = include_str!("./page.html.tera");
 
-#[macro_export]
-macro_rules! af {
-    ($($tt:tt)*) => { {
-        let msg = format!($($tt)*);
-        ::tracing::error!("{}:{} {}", file!(), line!(), msg);
-        ::anyhow::anyhow!(msg)
-    } };
+#[derive(Error, Debug)]
+enum ErrorInner {
+    #[error("Could not strip prefix: {0}")]
+    StripPrefix(#[from] std::path::StripPrefixError),
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("File not found: {display}", display = .0.display())]
+    FileNotFound(PathBuf),
+    #[error("Thumbnail dir must be dir")]
+    ThumbnailDirNotDir,
+    #[error("File dir must be dir")]
+    FileDirNotDir,
+    #[error("Cannot serve from system root directory")]
+    CannotServeFromRoot,
+    #[error("Image conversion error: {0}")]
+    Image(#[from] image::error::ImageError),
+    #[error("Config error: {0:?}")]
+    Config(&'static str),
+    #[error("Not a number")]
+    NumberParse(#[from] std::num::TryFromIntError),
+    #[error("Invalid TOML: {0}")]
+    FromToml(#[from] toml::de::Error),
+}
+
+#[derive(Debug)]
+enum Error {
+    Root(ErrorInner),
+    Context { context: String, inner: Box<Error> },
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        let inner: &ErrorInner = &*self;
+        Some(inner)
+    }
+}
+
+trait Context<T> {
+    fn context<C>(self, context: C) -> Result<T, Error>
+    where
+        C: std::fmt::Display + Send + Sync + 'static;
+
+    fn with_context<F, C>(self, context_fn: F) -> Result<T, Error>
+    where
+        F: FnOnce() -> C,
+        C: std::fmt::Display + Send + Sync + 'static;
+}
+
+impl<T, E: Into<Error>> Context<T> for Result<T, E> {
+    fn context<C>(self, context: C) -> Result<T, Error>
+    where
+        C: std::fmt::Display + Send + Sync + 'static,
+    {
+        match self {
+            Ok(t) => Ok(t),
+            Err(err) => Err(Error::Context {
+                context: context.to_string(),
+                inner: Box::new(err.into()),
+            }),
+        }
+    }
+
+    fn with_context<F, C>(self, context_fn: F) -> Result<T, Error>
+    where
+        F: FnOnce() -> C,
+        C: std::fmt::Display + Send + Sync + 'static,
+    {
+        match self {
+            Ok(t) => Ok(t),
+            Err(err) => Err(Error::Context {
+                context: context_fn().to_string(),
+                inner: Box::new(err.into()),
+            }),
+        }
+    }
+}
+
+impl Deref for Error {
+    type Target = ErrorInner;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Error::Root(inner) => inner,
+            Error::Context { inner, .. } => {
+                let box_ref = Box::as_ref(inner);
+                <Error as Deref>::deref(box_ref)
+            }
+        }
+    }
+}
+
+impl<T: Into<ErrorInner>> From<T> for Error {
+    fn from(value: T) -> Self {
+        Error::Root(value.into())
+    }
+}
+
+impl Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::Root(inner) => write!(f, "{}", inner),
+            Error::Context { context, inner } => {
+                Display::fmt(inner, f)?;
+                write!(f, "\n  {}", context)
+            }
+        }
+    }
+}
+
+impl Error {
+    fn inner(self) -> ErrorInner {
+        match self {
+            Error::Root(api_error_inner) => api_error_inner,
+            Error::Context { inner, .. } => inner.inner(),
+        }
+    }
+
+    fn inner_ref(&self) -> &ErrorInner {
+        match self {
+            Error::Root(error_inner) => error_inner,
+            Error::Context { inner, .. } => inner.inner_ref(),
+        }
+    }
 }
 
 fn percent_encode(s: &str) -> String {
@@ -37,8 +155,12 @@ fn not_found() -> Response {
     Response::text("Not found").with_status_code(404)
 }
 
-fn bad_request() -> Response {
-    Response::text("Bad request").with_status_code(400)
+fn bad_request(why: &str) -> Response {
+    Response::text(why).with_status_code(400)
+}
+
+fn unauthorized(why: &str) -> Response {
+    Response::text(why).with_status_code(401)
 }
 
 fn internal_error() -> Response {
@@ -69,32 +191,27 @@ impl File {
     const THUMBNAILABLE_EXTENSIONS: &'static [&'static str] =
         &["png", "tiff", "bmp", "gif", "jpeg", "jpg", "tif"];
 
-    fn walk_dir(dir: &LocalPath, include_path: &impl Fn(&Path) -> bool) -> Result<Vec<File>> {
+    fn walk_dir(
+        dir: &LocalPath,
+        include_path: &impl Fn(&Path) -> bool,
+    ) -> Result<Vec<File>, Error> {
         let mut contents = Vec::new();
         for entry in dir
             .local_path()
             .read_dir()
-            .map_err(|e| af!("couldn't walk dir {}: {}", dir.local_path().display(), e))?
+            .with_context(|| format!("Reading entries in {}", dir))?
         {
-            let entry = entry.map_err(|e| {
-                af!(
-                    "couldn't read entry in {}: {}",
-                    dir.local_path().display(),
-                    e
-                )
-            })?;
-            let path = entry.path().canonicalize().map_err(|e| {
-                af!(
-                    "couldn't get absolute path of {}: {}",
-                    entry.path().display(),
-                    e
-                )
-            })?;
+            let entry = entry.with_context(|| format!("Reading dir entry in {}", dir))?;
+            let path = entry
+                .path()
+                .canonicalize()
+                .with_context(|| format!("Canonicalizing {} in {}", entry.path().display(), dir))?;
 
             if include_path(&path) {
                 contents.push(if path.is_dir() {
                     let local_path = LocalPath::from(path);
-                    let inner = Self::walk_dir(&local_path, include_path)?;
+                    let inner = Self::walk_dir(&local_path, include_path)
+                        .with_context(|| format!("Walking entries in {}", local_path))?;
                     File::Dir(local_path, inner)
                 } else {
                     File::File(LocalPath::from(path))
@@ -154,23 +271,21 @@ impl File {
 fn build_thumbnail_db(
     files: &[File],
     thumbnail_dir: &LocalPath,
-) -> Result<HashMap<LocalPath, ThumbnailPath>> {
+) -> Result<HashMap<LocalPath, ThumbnailPath>, Error> {
     fn btdb_rec(
         db: &mut HashMap<LocalPath, ThumbnailPath>,
         files: &[File],
         thumbnail_dir: &LocalPath,
-    ) -> Result<()> {
+    ) -> Result<(), Error> {
         for file in files {
             match file {
-                File::Dir(_, files) => btdb_rec(db, files, thumbnail_dir)?,
+                File::Dir(_, files) => btdb_rec(db, files, thumbnail_dir)
+                    .with_context(|| format!("Building thumbnail DB in {}", thumbnail_dir))?,
                 file @ File::File(path) if file.may_be_thumbnailed() => {
-                    let path = path.local_path().canonicalize().map_err(|e| {
-                        af!(
-                            "couldn't get absolute path for {}: {}",
-                            path.local_path().display(),
-                            e
-                        )
-                    })?;
+                    let path = path
+                        .local_path()
+                        .canonicalize()
+                        .with_context(|| format!("Canonicalizing thumbnail path at {}", path))?;
                     let thumbnail_path = thumbnail_path(&path, thumbnail_dir);
                     db.insert(LocalPath::from(path), thumbnail_path);
                 }
@@ -184,7 +299,8 @@ fn build_thumbnail_db(
     }
 
     let mut db = HashMap::new();
-    btdb_rec(&mut db, files, thumbnail_dir)?;
+    btdb_rec(&mut db, files, thumbnail_dir)
+        .with_context(|| format!("Building outer thumbnail DB in {}", thumbnail_dir))?;
     Ok(db)
 }
 
@@ -198,32 +314,29 @@ pub struct Database {
 }
 
 impl Database {
-    fn open_thumbnail(&self, thumb: &str) -> Result<FsFile> {
+    fn open_thumbnail(&self, thumb: &str) -> Result<FsFile, Error> {
         let thumbnail_path = self.thumbnail_dir.local_path().join(thumb);
-        Ok(FsFile::open(thumbnail_path)?)
+        Ok(FsFile::open(thumbnail_path).with_context(|| format!("Reading thumbnail {}", thumb))?)
     }
 
-    fn get_context_for(&self, config: &Config, serve_dir: &ServePath) -> Result<Context> {
-        let local_dir = LocalPath::from_serve_path(&self, config, serve_dir)?;
+    fn get_context_for(
+        &self,
+        config: &Config,
+        serve_dir: &ServePath,
+    ) -> Result<TeraContext, Error> {
+        let local_dir = LocalPath::from_serve_path(&self, config, serve_dir)
+            .with_context(|| format!("Converting serve path to local path: {:?}", serve_dir))?;
 
-        let mut context = Context::new();
+        let mut context = TeraContext::new();
 
         let mut dirs = Vec::new();
         let mut files = Vec::new();
-        for entry in local_dir.local_path().read_dir().map_err(|e| {
-            af!(
-                "couldn't walk dir to make page: {}: {}",
-                local_dir.local_path().display(),
-                e
-            )
-        })? {
-            let entry = entry.map_err(|e| {
-                af!(
-                    "couldn't read dir entry in {}: {}",
-                    local_dir.local_path().display(),
-                    e
-                )
-            })?;
+        for entry in local_dir
+            .local_path()
+            .read_dir()
+            .with_context(|| format!("Reading dir entry building context in {}", local_dir))?
+        {
+            let entry = entry.with_context(|| format!("Reading dir entry in {}", local_dir))?;
             let path = LocalPath::from(entry.path());
 
             if path == self.thumbnail_dir {
@@ -293,7 +406,14 @@ impl Database {
                 created,
                 modified,
                 accessed,
-                filename: ServePath::from_local_path(&self, config, &path)?.to_string(true),
+                filename: ServePath::from_local_path(&self, config, &path)
+                    .with_context(|| {
+                        format!(
+                            "Building serve path for dir {} while creating context in {}",
+                            path, local_dir
+                        )
+                    })?
+                    .to_string(true),
                 thumbnail_path: None,
             });
         }
@@ -316,7 +436,14 @@ impl Database {
                 created,
                 modified,
                 accessed,
-                filename: ServePath::from_local_path(&self, config, &path)?.to_string(true),
+                filename: ServePath::from_local_path(&self, config, &path)
+                    .with_context(|| {
+                        format!(
+                            "Building serve path for file {} while creating context in {}",
+                            path, local_dir
+                        )
+                    })?
+                    .to_string(true),
                 thumbnail_path: self
                     .thumbnails
                     .get(&path)
@@ -332,58 +459,32 @@ impl Database {
         Ok(context)
     }
 
-    fn read_config_and_make_dirs(config: &Config) -> Result<Database> {
+    fn read_config_and_make_dirs(config: &Config) -> Result<Database, Error> {
         let thumbnail_dir = PathBuf::from(&config.thumbnail_dir);
-        let thumbnail_dir = LocalPath::from(thumbnail_dir.canonicalize().map_err(|e| {
-            af!(
-                "couldn't create absolute thumbnail dir from {}: {}",
-                thumbnail_dir.display(),
-                e
-            )
+        let thumbnail_dir = LocalPath::from(thumbnail_dir.canonicalize().with_context(|| {
+            format!("Canonicalizing thumbnail dir {}", thumbnail_dir.display())
         })?);
         if !thumbnail_dir.local_path().exists() {
-            std::fs::create_dir(thumbnail_dir.local_path()).map_err(|e| {
-                af!(
-                    "couldn't create thumbnail dir {}: {}",
-                    thumbnail_dir.local_path().display(),
-                    e
-                )
-            })?;
+            std::fs::create_dir(thumbnail_dir.local_path()).context("Creating thumbnail dir")?;
         } else if !thumbnail_dir.local_path().is_dir() {
-            return Err(af!(
-                "thumbnail dir must be dir {}",
-                thumbnail_dir.local_path().display()
-            ));
+            return Err(ErrorInner::ThumbnailDirNotDir.into());
         }
 
         let file_dir = PathBuf::from(&config.file_dir);
-        let file_dir = LocalPath::from(file_dir.canonicalize().map_err(|e| {
-            af!(
-                "couldn't create absolute file dir from {}: {}",
-                file_dir.display(),
-                e
-            )
-        })?);
+        let file_dir = LocalPath::from(file_dir.canonicalize().context("Canonicalizing file dir")?);
         if !file_dir.local_path().exists() {
-            std::fs::create_dir(file_dir.local_path()).map_err(|e| {
-                af!(
-                    "couldn't create file dir {}: {}",
-                    file_dir.local_path().display(),
-                    e
-                )
-            })?;
+            std::fs::create_dir(file_dir.local_path()).context("Creating file dir")?;
         } else if !file_dir.local_path().is_dir() {
-            return Err(af!(
-                "file dir must be dir {}",
-                file_dir.local_path().display()
-            ));
+            return Err(ErrorInner::FileDirNotDir.into());
         }
         if file_dir.local_path().parent().is_none() {
-            return Err(af!("cannot serve files from root dir"));
+            return Err(ErrorInner::CannotServeFromRoot.into());
         }
 
-        let files = File::walk_dir(&file_dir, &|path| path != thumbnail_dir.local_path())?;
-        let thumbnails = build_thumbnail_db(&files, &thumbnail_dir)?;
+        let files = File::walk_dir(&file_dir, &|path| path != thumbnail_dir.local_path())
+            .context("Walking files in file dir")?;
+        let thumbnails =
+            build_thumbnail_db(&files, &thumbnail_dir).context("Building thumbnail DB")?;
         Ok(Database {
             file_dir,
             files,
@@ -392,7 +493,7 @@ impl Database {
         })
     }
 
-    fn index_and_build_thumbnail_db(&self, config: &Config) -> Result<()> {
+    fn index_and_build_thumbnail_db(&self, config: &Config) -> Result<(), Error> {
         for (file_path, thumbnail_path) in self.thumbnails.iter() {
             if !thumbnail_path.thumbnail_path().exists() || config.rebuild_thumbnails {
                 tracing::info!(
@@ -402,21 +503,9 @@ impl Database {
                 );
 
                 let image = match ImageReader::open(file_path.local_path())
-                    .map_err(|e| {
-                        af!(
-                            "couldn't read file for thumbnailing: {}: {}",
-                            file_path.local_path().display(),
-                            e
-                        )
-                    })?
+                    .with_context(|| format!("Reading image {}", file_path))?
                     .with_guessed_format()
-                    .map_err(|e| {
-                        af!(
-                            "couldn't guess format: {}: {}",
-                            file_path.local_path().display(),
-                            e
-                        )
-                    })?
+                    .with_context(|| format!("Guessing format of {}", file_path))?
                     .decode()
                 {
                     Ok(image) => image,
@@ -437,12 +526,10 @@ impl Database {
                 let converted: ImageBuffer<Rgb<u8>, _> = thumbnail.convert();
                 converted
                     .save(thumbnail_path.thumbnail_path())
-                    .map_err(|e| {
-                        af!(
-                            "couldn't save thumbnail for {} in {}: {}",
-                            file_path.local_path().display(),
-                            thumbnail_path.thumbnail_path().display(),
-                            e
+                    .with_context(|| {
+                        format!(
+                            "Saving thumbnail {}",
+                            thumbnail_path.thumbnail_path().display()
                         )
                     })?;
             }
@@ -514,38 +601,33 @@ pub struct Config {
 }
 
 impl Config {
-    fn read_from(config_path: &str) -> Result<Config> {
+    fn read_from(config_path: &str) -> Result<Config, Error> {
         let config_file = std::fs::read_to_string(config_path)
-            .map_err(|_| af!("can't read config file {}", config_path))?;
+            .with_context(|| format!("Reading path {}", config_path))?;
         let toml = toml::from_str::<toml::Value>(&config_file)
-            .map_err(|e| af!("couldn't read config file {}:\n{:#?}", config_path, e))?;
+            .with_context(|| format!("Parsing TOML data in {}", config_path))?;
 
         let thumbnail_dir = toml
             .get("thumbnail_dir")
-            .ok_or_else(|| af!("need thumbnail dir in config file {}", config_path))?
+            .ok_or(ErrorInner::Config("thumbnail_dir missing in config file"))?
             .as_str()
-            .ok_or_else(|| {
-                af!(
-                    "thumbnail dir must be string in config file {}",
-                    config_path
-                )
-            })?
+            .ok_or(ErrorInner::Config(
+                "thumbnail dir must be string in config file",
+            ))?
             .to_string();
 
         let file_dir = toml
             .get("file_dir")
-            .ok_or_else(|| af!("need file dir in config file {}", config_path))?
+            .ok_or(ErrorInner::Config("need file dir in config file"))?
             .as_str()
-            .ok_or_else(|| af!("file dir must be string in config file {}", config_path))?
+            .ok_or(ErrorInner::Config("file dir must be string in config file"))?
             .to_string();
 
         let thumbnail_size = toml
             .get("thumbnail_size")
             .map(|size| match size {
-                toml::Value::Integer(value) => (*value)
-                    .try_into()
-                    .map_err(|_| af!("thumbnail size must fit in u32")),
-                _ => Err(af!("thumbnail size must be integer")),
+                toml::Value::Integer(value) => (*value).try_into().map_err(ErrorInner::from),
+                _ => Err(ErrorInner::Config("thumbnail size must be integer")),
             })
             .transpose()?
             .unwrap_or(75);
@@ -562,7 +644,9 @@ impl Config {
                             value
                         }
                     })
-                    .ok_or_else(|| af!("page_root must be a string in config file {}", config_path))
+                    .ok_or(ErrorInner::Config(
+                        "page_root must be a string in config file",
+                    ))
             })
             .transpose()?;
 
@@ -571,15 +655,15 @@ impl Config {
             .map(|auth| {
                 auth.as_str()
                     .map(String::from)
-                    .ok_or_else(|| af!("auth must be a string in config file {}", config_path))
+                    .ok_or(ErrorInner::Config("auth must be a string in config file"))
             })
             .transpose()?;
 
         let bind = toml
             .get("bind")
-            .ok_or_else(|| af!("need bind in config file {}", config_path))?
+            .ok_or(ErrorInner::Config("need bind in config file"))?
             .as_str()
-            .ok_or_else(|| af!("bind must be string in config file {}", config_path))?
+            .ok_or(ErrorInner::Config("bind must be string in config file"))?
             .to_string();
 
         let auth_realm = toml
@@ -588,7 +672,7 @@ impl Config {
                 realm
                     .as_str()
                     .map(String::from)
-                    .ok_or_else(|| af!("auth_realm must be a string"))
+                    .ok_or(ErrorInner::Config("auth_realm must be a string"))
             })
             .transpose()?;
 
@@ -605,13 +689,13 @@ impl Config {
     }
 }
 
-fn main() -> Result<()> {
+fn main() -> Result<(), Error> {
     tracing_subscriber::fmt::init();
 
     let args = std::env::args().collect::<Vec<_>>();
     let mut config = Config::read_from(
         args.get(1)
-            .ok_or_else(|| af!("need config file argument"))?,
+            .ok_or(ErrorInner::Config("need config file argument"))?,
     )?;
     let database = Database::read_config_and_make_dirs(&config)?;
 
@@ -644,24 +728,24 @@ fn main() -> Result<()> {
                 let auth = auth_value.split(" ").collect::<Vec<_>>();
                 if auth.len() != 2 {
                     tracing::warn!("broken auth header: {}", auth_value);
-                    return bad_request();
+                    return bad_request("Broken auth header");
                 }
                 if auth[0] != "Basic" {
                     tracing::warn!("broken auth type: {}", auth[0]);
-                    return bad_request();
+                    return bad_request("Incorrect auth type");
                 }
                 use base64::Engine;
                 let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&auth[1]) else {
                     tracing::warn!("broken auth: {}", auth[1]);
-                    return bad_request();
+                    return bad_request("Invalid Basic auth");
                 };
                 let Ok(auth) = std::str::from_utf8(&bytes) else {
                     tracing::warn!("broken auth utf8: {}", auth[1]);
-                    return bad_request();
+                    return bad_request("Basic auth not UTF-8");
                 };
                 if auth != config_auth {
                     tracing::warn!("incorrect user/pass from {}: {}", remote, auth);
-                    return bad_request();
+                    return unauthorized("Incorrect user/pass");
                 }
             } else {
                 return Response::text("need auth!")
@@ -694,7 +778,7 @@ fn main() -> Result<()> {
         let url = if let Some(root) = config.page_root.as_ref() {
             if !full_url.starts_with(root) {
                 tracing::debug!("url didn't start with page root");
-                return bad_request();
+                return bad_request("URL path did not start with page root");
             }
 
             &full_url
@@ -703,9 +787,12 @@ fn main() -> Result<()> {
         };
 
         let url_serve_path = ServePath::from(PathBuf::from(url));
-        let Ok(request_local_path) = LocalPath::from_serve_path(&db, &config, &url_serve_path)
-        else {
-            return bad_request();
+        let request_local_path = match LocalPath::from_serve_path(&db, &config, &url_serve_path) {
+            Ok(local_path) => local_path,
+            Err(error) if matches!(error.inner_ref(), &ErrorInner::FileNotFound(_)) => {
+                return not_found()
+            }
+            _ => return unauthorized("Not a local path"),
         };
 
         tracing::debug!(
@@ -731,7 +818,7 @@ fn main() -> Result<()> {
                     .unwrap_or(PathBuf::from("(couldn't canonicalize)"))
                     .display()
             );
-            return bad_request();
+            return unauthorized("Unauthorized");
         }
 
         tracing::debug!(
@@ -774,12 +861,19 @@ fn main() -> Result<()> {
                                 .to_string_lossy()
                                 .into_owned()
                         };
-                        Ok::<_, anyhow::Error>(TitlePart {
+                        Ok::<_, Error>(TitlePart {
                             href: ServePath::from_local_path(
                                 &db,
                                 &config,
                                 &LocalPath::from(unc.to_path_buf()),
-                            )?
+                            )
+                            .with_context(|| {
+                                format!(
+                                    "Creating title part for ancestor {} of {}",
+                                    unc.display(),
+                                    url_serve_path
+                                )
+                            })?
                             .to_string(true),
                             path,
                             last: false,

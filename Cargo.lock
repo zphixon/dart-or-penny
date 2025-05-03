@@ -383,7 +383,6 @@ dependencies = [
 name = "dart-or-penny"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "base64 0.22.1",
  "chrono",
  "image",
@@ -391,6 +390,7 @@ dependencies = [
  "rouille",
  "serde",
  "tera",
+ "thiserror 2.0.12",
  "toml",
  "tracing",
  "tracing-subscriber",
