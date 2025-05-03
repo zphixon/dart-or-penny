@@ -87,7 +87,7 @@
         <div class="file row">
           <div class="file icon">
             {% if file.thumbnail_path %}
-              <img src="{{ page_root }}?thumbnail={{ file.thumbnail_path }}" />
+              <img loading="lazy" src="{{ page_root }}?thumbnail={{ file.thumbnail_path }}" />
             {% else %}
               📃
             {% endif %}

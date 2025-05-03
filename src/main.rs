@@ -766,6 +766,7 @@ fn main() -> Result<(), Error> {
 
         if Some(&full_url) == config.page_root.as_ref() {
             if let Some(thumbnail) = request.get_param("thumbnail") {
+                tracing::trace!("Thumbnail request for {}", thumbnail);
                 let Ok(thumb) = db.open_thumbnail(&thumbnail) else {
                     tracing::error!("couldn't read thumbnail {}", thumbnail);
                     return internal_error();
