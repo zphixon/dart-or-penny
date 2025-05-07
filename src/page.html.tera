@@ -42,6 +42,7 @@
       }
       #searchboxdiv {
         display: flex;
+        column-gap: 0.5em;
         padding-bottom: 1em;
       }
       #searchbox {
@@ -60,13 +61,15 @@
       {% endfor %}
     </h1>
     <div id="searchboxdiv">
+      <button id="clearSearch">clear search</button>
       <input id="searchbox" type="text" placeholder="🔎 search"/>
-      <input id="everywhere" type="checkbox"/>
-      <label for="everywhere">search everywhere?</label>
+      <label for="caseSensitive">case sensitive?</label>
+      <input id="caseSensitive" type="checkbox"/>
+      <button id="searchEverywhere">search everywhere</button>
     </div>
     <div class="filetable">
       <div class="header row">
-        <div></div>
+        <div class="header numfiles">{{ num_files }}</div>
         <div class="header filename">filename</div>
         <div class="header created">created</div>
         <div class="header modified">modified</div>
@@ -102,107 +105,94 @@
       {% endfor %}
     </div>
     <script type="text/javascript">
-      let sort = null;
-      function setSort() {
-          if (sort == null) {
-              sort = "mostRecentFirst";
-          } else if (sort == "mostRecentFirst") {
-              sort = "mostRecentLast";
-          } else {
-              sort = "mostRecentFirst";
-          }
-      }
-
-      function doSort(direction, list) {
-          [...list.children].sort((a, b) => {
-              if (direction == "mostRecentFirst") {
-                  return new Date(a.children[3].innerText) < new Date(b.children[3].innerText);
-              } else if (direction == "mostRecentLast") {
-                  return new Date(a.children[3].innerText) > new Date(b.children[3].innerText);
-              } else {
-                  return false;
-              }
-          }).forEach(child => list.appendChild(child));
-      }
-
-      let rows = document.querySelector(".filetable");
-      //let filename = document.querySelector(".header.filename");
-      let created = document.querySelector(".header.created");
-      let modified = document.querySelector(".header.modified");
-      let accessed = document.querySelector(".header.accessed");
-
-      created.onclick = () => { setSort(); doSort(sort, rows) };
-      modified.onclick = () => { setSort(); doSort(sort, rows) };
-      accessed.onclick = () => { setSort(); doSort(sort, rows) };
-
-      let filenames = document.querySelectorAll(".filename > a");
-      let filelist = null;
       let searchbox = document.getElementById("searchbox");
-      let searchboxdiv = document.getElementById("searchboxdiv");
-      let everywhere = document.getElementById("everywhere");
+      let searchEverywhere = document.getElementById("searchEverywhere");
+      let clearSearch = document.getElementById("clearSearch");
+      let sensitive = document.getElementById("caseSensitive");
 
-      function filterListForSearchbox() {
-          for (searchresult of document.querySelectorAll('.everywheresearch')) {
-              searchresult.remove();
+      function matches(haystack, needle) {
+        if (needle == "") {
+          return true;
+        }
+        let flags = "i";
+        if (sensitive.checked) {
+          flags = "";
+        }
+        return haystack.search(new RegExp(needle, flags)) >= 0;
+        //return a.toLocaleLowerCase().indexOf(b.toLocaleLowerCase()) >= 0;
+      }
+
+      function filterList(filterQuery) {
+        let rows = document.querySelectorAll(".row:not(.header)");
+        for (let row of rows) {
+          let filename = row.querySelector(".filename");
+          if (filename == null) {
+            continue;
           }
-
-          if (everywhere.checked) {
-              rows.style.display = 'none';
-              for (file of filelist) {
-                  if (file.indexOf(searchbox.value) < 0) {
-                      continue;
-                  }
-
-                  let div = document.createElement('div');
-                  div.classList.add('everywheresearch');
-
-                  var total = "";
-                  for (part of file.split('/')) {
-                      if (part === "") {
-                          continue;
-                      }
-
-                      total += "/" + part;
-                      let a = document.createElement('a');
-                      a.href = total;
-                      a.appendChild(document.createTextNode(part));
-                      div.appendChild(document.createTextNode("/"));
-                      div.appendChild(a);
-                  }
-
-                  rows.parentElement.appendChild(div);
-              }
+          if (matches(filename.innerText, filterQuery)) {
+            // setting display to empty string resets to previous display property
+            row.style.display = "";
           } else {
-              rows.style.display = '';
-              for (filename of filenames) {
-                  if (URL.parse(filename.href).pathname.indexOf(searchbox.value) < 0) {
-                      filename.parentElement.parentElement.style.display = 'none';
-                  } else {
-                      filename.parentElement.parentElement.style.display = '';
-                  }
-              }
+            row.style.display = "none";
           }
+        }
       }
 
-      function refreshList() {
-          let listurl = window.location;
-          if (everywhere.checked) {
-              listurl = "{{ page_root }}";
-          }
+      function doSearchEverywhere() {
+        let fileTable = document.querySelector(".filetable");
+        fileTable.style.display = 'none';
 
-          fetch(listurl + '?filelist').then(
-              (response) => response.json()
-          ).then(
-              (json) => {
-                  filelist = json;
-                  filterListForSearchbox();
+        fetch("{{ page_root }}?filelist")
+          .then(response => response.json())
+          .then(filelist => {
+            for (file of filelist) {
+              if (!matches(file, searchbox.value)) {
+                continue;
               }
-          );
+
+              let div = document.createElement('div');
+              div.classList.add('everywheresearch');
+
+              let firsta = document.createElement("a");
+              firsta.href = "{{ page_root }}";
+              firsta.appendChild(document.createTextNode("{{ file_dir }}"));
+              div.appendChild(firsta);
+
+              var total = "{{ page_root }}";
+              for (part of file.split('{{ path_sep }}')) {
+                if (part === "") {
+                  continue;
+                }
+
+                total += "/" + part;
+                let a = document.createElement('a');
+                a.href = total;
+                a.appendChild(document.createTextNode(part));
+                div.appendChild(document.createTextNode("/"));
+                div.appendChild(a);
+              }
+
+              fileTable.parentElement.appendChild(div);
+            }
+          });
       }
 
-      searchboxdiv.onclick = refreshList;
-      everywhere.onchange = refreshList;
-      searchbox.oninput = filterListForSearchbox;
+      searchbox.oninput = event => filterList(event.target.value);
+      sensitive.onchange = _ => filterList(searchbox.value);
+
+      clearSearch.onclick = _ => {
+        for (let everySearch of document.querySelectorAll(".everywheresearch")) {
+          everySearch.remove();
+        }
+
+        let fileTable = document.querySelector(".filetable");
+        fileTable.style.display = "";
+
+        searchbox.value = "";
+        filterList("");
+      };
+
+      searchEverywhere.onclick = _ => doSearchEverywhere();
     </script>
   </body>
 </html>

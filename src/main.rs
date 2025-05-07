@@ -24,6 +24,7 @@ use std::{
 use tera::{Context as TeraContext, Tera};
 use thiserror::Error;
 use tokio::{io::AsyncReadExt, net::TcpListener};
+use tower_http::compression::CompressionLayer;
 
 const PAGE_TEMPLATE: &str = include_str!("./page.html.tera");
 
@@ -231,6 +232,13 @@ impl MyFile {
             MyFile::File(local_path) => local_path,
         }
     }
+
+    fn len(&self) -> usize {
+        match self {
+            MyFile::Dir(_, my_files) => my_files.iter().map(|file| file.len()).sum(),
+            MyFile::File(_) => 1,
+        }
+    }
 }
 
 fn build_thumbnail_db(
@@ -411,6 +419,33 @@ impl Database {
 
         context.insert("dirs", &serde_dirs);
         context.insert("files", &serde_files);
+
+        if serve_dir == config.file_dir {
+            context.insert("num_files", &self.files.iter().map(|myfile| myfile.len()).sum::<usize>());
+        } else {
+            context.insert(
+                "num_files",
+                &self.files
+                    .iter()
+                    .flat_map(|myfile| myfile.find(serve_dir))
+                    .map(|myfile| myfile.len())
+                    .next()
+                    .unwrap_or(0),
+            );
+        }
+
+        context.insert(
+            "path_sep",
+            if cfg!(target_os = "windows") {
+                "\\\\"
+            } else {
+                "/"
+            },
+        );
+        context.insert(
+            "file_dir",
+            &config.file_dir.display().to_string().replace("\\", "\\\\"),
+        );
         Ok(context)
     }
 
@@ -513,7 +548,14 @@ impl Database {
                 return;
             }
 
-            list.push(path.display().to_string());
+            if path != &config.file_dir {
+                let Ok(strip_path) = path.strip_prefix(&config.file_dir) else {
+                    tracing::error!("couldn't strip prefix");
+                    return;
+                };
+                list.push(strip_path.display().to_string());
+            }
+
             if path.is_dir() {
                 let Ok(readdir) = path.read_dir() else {
                     // TODO error xdd
@@ -604,6 +646,7 @@ async fn main() -> Result<(), Error> {
             state.clone(),
             basic_auth_layer,
         ))
+        .layer(CompressionLayer::new())
         .with_state(state.clone());
 
     let listener = TcpListener::bind(state.config.bind)
