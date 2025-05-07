@@ -146,7 +146,7 @@ fn thumbnail_path(of: &Path, thumbnail_dir: &Path) -> PathBuf {
         .map(|byte| format!("{:02x}", byte))
         .collect::<String>();
 
-    thumbnail_dir.join(hash).with_extension("jpg")
+    thumbnail_dir.join(hash).with_extension("webp")
 }
 
 #[derive(Debug)]
@@ -157,7 +157,7 @@ enum MyFile {
 
 impl MyFile {
     const THUMBNAILABLE_EXTENSIONS: &'static [&'static str] =
-        &["png", "tiff", "bmp", "gif", "jpeg", "jpg", "tif"];
+        &["png", "tiff", "bmp", "gif", "jpeg", "jpg", "tif", "webp"];
 
     fn walk_dir(dir: &Path, include_path: &impl Fn(&Path) -> bool) -> Result<Vec<MyFile>, Error> {
         let mut contents = Vec::new();
@@ -421,11 +421,15 @@ impl Database {
         context.insert("files", &serde_files);
 
         if serve_dir == config.file_dir {
-            context.insert("num_files", &self.files.iter().map(|myfile| myfile.len()).sum::<usize>());
+            context.insert(
+                "num_files",
+                &self.files.iter().map(|myfile| myfile.len()).sum::<usize>(),
+            );
         } else {
             context.insert(
                 "num_files",
-                &self.files
+                &self
+                    .files
                     .iter()
                     .flat_map(|myfile| myfile.find(serve_dir))
                     .map(|myfile| myfile.len())
@@ -518,8 +522,13 @@ impl Database {
                 let thumbnail = image::imageops::thumbnail(&image, nw, nh);
 
                 let converted: ImageBuffer<Rgb<u8>, _> = thumbnail.convert();
-                converted
-                    .save(thumbnail_path)
+                let dynamic = image::DynamicImage::from(converted);
+                let Ok(encoder) = webp::Encoder::from_image(&dynamic) else {
+                    tracing::error!("Couldn't encode {} as webp", file_path.display());
+                    continue;
+                };
+                let webp = encoder.encode(60.0);
+                std::fs::write(thumbnail_path, &*webp)
                     .with_context(|| format!("Saving thumbnail {}", thumbnail_path.display()))?;
             }
         }
@@ -733,7 +742,7 @@ async fn file_handler(
 
         return (
             [
-                ("Content-Type", "image/jpeg"),
+                ("Content-Type", "image/webp"),
                 ("Cache-Control", THUMBNAIL_CACHE_POLICY),
             ],
             data,
