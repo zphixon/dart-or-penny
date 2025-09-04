@@ -877,10 +877,15 @@ async fn file_handler(
             }
         }
 
-        let content_type = infer::get(&data)
-            .map(|kind| kind.mime_type())
-            .unwrap_or("application/binary");
-
-        ([("Content-Type", content_type)], data).into_response()
+        (
+            [(
+                "Content-Type",
+                mime_guess::from_path(&full_request_path)
+                    .first_or_octet_stream()
+                    .essence_str(),
+            )],
+            data,
+        )
+            .into_response()
     }
 }
