@@ -877,26 +877,10 @@ async fn file_handler(
             }
         }
 
-        let extension = full_request_path
-            .extension()
-            .map(|ext| ext.to_string_lossy().to_lowercase());
-        (
-            [(
-                "Content-Type",
-                match extension.as_ref().map(|s| s.as_str()) {
-                    Some("jpg" | "jpeg") => "image/jpeg",
-                    Some("png") => "image/png",
-                    Some("tiff" | "tif") => "image/tiff",
-                    Some("bmp") => "image/bmp",
-                    Some("gif") => "image/gif",
-                    Some("txt") => "text/plain",
-                    Some("svg") => "image/svg+xml",
-                    Some("pdf") => "application/pdf",
-                    _ => "application/binary",
-                },
-            )],
-            data,
-        )
-            .into_response()
+        let content_type = infer::get(&data)
+            .map(|kind| kind.mime_type())
+            .unwrap_or("application/binary");
+
+        ([("Content-Type", content_type)], data).into_response()
     }
 }
