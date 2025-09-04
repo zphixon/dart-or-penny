@@ -138,49 +138,71 @@
         }
       }
 
-      function doSearchEverywhere() {
+      function filterEverywhere(filelist) {
         let fileTable = document.querySelector(".filetable");
         fileTable.style.display = 'none';
 
-        fetch("{{ page_root }}?filelist")
-          .then(response => response.json())
-          .then(filelist => {
-            for (file of filelist) {
-              if (!matches(file, searchbox.value)) {
-                continue;
-              }
+        for (result of document.querySelectorAll('.everywheresearch')) {
+          result.remove();
+        }
+        for (file of filelist) {
+          if (!matches(file, searchbox.value)) {
+            continue;
+          }
 
-              let div = document.createElement('div');
-              div.classList.add('everywheresearch');
+          let div = document.createElement('div');
+          div.classList.add('everywheresearch');
 
-              let firsta = document.createElement("a");
-              firsta.href = "{{ page_root }}";
-              firsta.appendChild(document.createTextNode("{{ file_dir }}"));
-              div.appendChild(firsta);
+          let firsta = document.createElement("a");
+          firsta.href = "{{ page_root }}";
+          firsta.appendChild(document.createTextNode("{{ file_dir }}"));
+          div.appendChild(firsta);
 
-              var total = "{{ page_root }}";
-              for (part of file.split('{{ path_sep }}')) {
-                if (part === "") {
-                  continue;
-                }
-
-                total += "/" + part;
-                let a = document.createElement('a');
-                a.href = total;
-                a.appendChild(document.createTextNode(part));
-                div.appendChild(document.createTextNode("/"));
-                div.appendChild(a);
-              }
-
-              fileTable.parentElement.appendChild(div);
+          var total = "{{ page_root }}";
+          for (part of file.split('{{ path_sep }}')) {
+            if (part === "") {
+              continue;
             }
-          });
+
+            total += "/" + part;
+            let a = document.createElement('a');
+            a.href = total;
+            a.appendChild(document.createTextNode(part));
+            div.appendChild(document.createTextNode("/"));
+            div.appendChild(a);
+          }
+
+          fileTable.parentElement.appendChild(div);
+        }
+      }
+
+      let searchingEverywhere = false;
+      let filelistCache = null;
+      function doSearchEverywhere() {
+        searchingEverywhere = true;
+        if (filelistCache) {
+          filterEverywhere(filelistCache);
+        } else {
+          fetch("{{ page_root }}?filelist")
+            .then(response => response.json())
+            .then(filelist => {
+              filelistCache = filelist;
+              filterEverywhere(filelistCache);
+            });
+        }
       }
 
       searchbox.oninput = event => filterList(event.target.value);
+      searchbox.onkeydown = event => {
+        if (event.key === 'Enter' && searchingEverywhere) {
+          doSearchEverywhere();
+        }
+      };
+
       sensitive.onchange = _ => filterList(searchbox.value);
 
       clearSearch.onclick = _ => {
+        searchingEverywhere = false;
         for (let everySearch of document.querySelectorAll(".everywheresearch")) {
           everySearch.remove();
         }
