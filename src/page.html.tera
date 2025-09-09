@@ -89,14 +89,14 @@
       {% for file in files %}
         <div class="file row">
           <div class="file icon">
-            {% if file.thumbnail_path %}
-              <img loading="lazy" src="{{ page_root }}?thumbnail={{ file.thumbnail_path }}" />
+            {% if file.thumbnail_filename %}
+              <img loading="lazy" src="{{ page_root }}/thumbnail/{{ file.thumbnail_filename }}" />
             {% else %}
               📃
             {% endif %}
           </div>
           <div class="file filename">
-            <a href="{{ file.filename }}">{{ file.basename }}</a>
+            <a href="{{ file.filename }}" target="_blank" rel="noopener noreferrer">{{ file.basename }}</a>
           </div>
           <div class="file created">{{ file.created }}</div>
           <div class="file modified">{{ file.modified }}</div>
@@ -138,18 +138,16 @@
         }
       }
 
-      function filterEverywhere(filelist) {
+      function displayEverywhereSearchResults(filelist) {
         let fileTable = document.querySelector(".filetable");
         fileTable.style.display = 'none';
 
         for (result of document.querySelectorAll('.everywheresearch')) {
           result.remove();
         }
+        let i = -1;
         for (file of filelist) {
-          if (!matches(file, searchbox.value)) {
-            continue;
-          }
-
+          i += 1;
           let div = document.createElement('div');
           div.classList.add('everywheresearch');
 
@@ -167,6 +165,10 @@
             total += "/" + part;
             let a = document.createElement('a');
             a.href = total;
+            if (i + 1 == filelist.length) {
+              a.target = "_blank";
+              a.rel = "noopener noreferrer";
+            }
             a.appendChild(document.createTextNode(part));
             div.appendChild(document.createTextNode("/"));
             div.appendChild(a);
@@ -177,31 +179,20 @@
       }
 
       let searchingEverywhere = false;
-      let filelistCache = null;
       function doSearchEverywhere() {
         searchingEverywhere = true;
-        if (filelistCache) {
-          filterEverywhere(filelistCache);
-        } else {
-          fetch("{{ page_root }}?filelist")
-            .then(response => response.json())
-            .then(filelist => {
-              filelistCache = filelist;
-              filterEverywhere(filelistCache);
-            });
-        }
+        fetch(
+          "{{ page_root }}/search?regex="
+          + encodeURIComponent(searchbox.value)
+          + (sensitive.checked ? "&case_insensitive=false" : "")
+        )
+          .then(response => response.json())
+          .then(filelist => {
+            displayEverywhereSearchResults(filelist);
+          });
       }
 
-      searchbox.oninput = event => filterList(event.target.value);
-      searchbox.onkeydown = event => {
-        if (event.key === 'Enter' && searchingEverywhere) {
-          doSearchEverywhere();
-        }
-      };
-
-      sensitive.onchange = _ => filterList(searchbox.value);
-
-      clearSearch.onclick = _ => {
+      function doClearSearch() {
         searchingEverywhere = false;
         for (let everySearch of document.querySelectorAll(".everywheresearch")) {
           everySearch.remove();
@@ -212,6 +203,23 @@
 
         searchbox.value = "";
         filterList("");
+      }
+
+      searchbox.oninput = event => filterList(event.target.value);
+      searchbox.onkeydown = event => {
+        if (event.key === 'Enter' && searchingEverywhere) {
+          doSearchEverywhere();
+        }
+
+        if (event.key === 'Escape') {
+          doClearSearch();
+        }
+      };
+
+      sensitive.onchange = _ => filterList(searchbox.value);
+
+      clearSearch.onclick = _ => {
+        doClearSearch();
       };
 
       searchEverywhere.onclick = _ => doSearchEverywhere();

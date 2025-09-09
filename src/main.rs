@@ -11,6 +11,7 @@ use axum_extra::{
 };
 use image::{buffer::ConvertBuffer, ImageBuffer, ImageReader, Rgb};
 use percent_encoding::percent_decode;
+use regex::RegexBuilder;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -22,13 +23,13 @@ use std::{
     sync::Arc,
 };
 use tera::{Context as TeraContext, Tera};
-use thiserror::Error;
+use thiserror::Error as ThisError;
 use tokio::{io::AsyncReadExt, net::TcpListener};
 use tower_http::compression::CompressionLayer;
 
 const PAGE_TEMPLATE: &str = include_str!("./page.html.tera");
 
-#[derive(Error, Debug)]
+#[derive(ThisError, Debug)]
 enum ErrorInner {
     #[error("Could not strip prefix: {0}")]
     StripPrefix(#[from] std::path::StripPrefixError),
@@ -48,6 +49,8 @@ enum ErrorInner {
     NumberParse(#[from] std::num::TryFromIntError),
     #[error("Invalid TOML: {0}")]
     FromToml(#[from] toml::de::Error),
+    #[error("Regex: {0}")]
+    Regex(#[from] regex::Error),
 }
 
 #[derive(Debug)]
@@ -135,18 +138,45 @@ impl Display for Error {
     }
 }
 
-fn thumbnail_path(of: &Path, thumbnail_dir: &Path) -> PathBuf {
-    let name = format!("{}", of.display());
+impl IntoResponse for Error {
+    fn into_response(self) -> Response {
+        fn get_code_text(err: Error) -> (StatusCode, String) {
+            match err {
+                Error::Root(error_inner) => match error_inner {
+                    ErrorInner::StripPrefix(_)
+                    | ErrorInner::Io(_)
+                    | ErrorInner::ThumbnailDirNotDir
+                    | ErrorInner::FileDirNotDir
+                    | ErrorInner::CannotServeFromRoot
+                    | ErrorInner::Image(_)
+                    | ErrorInner::Config(_)
+                    | ErrorInner::NumberParse(_)
+                    | ErrorInner::FromToml(_) => (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("{}", error_inner),
+                    ),
+                    ErrorInner::Regex(_) => (StatusCode::BAD_REQUEST, format!("{}", error_inner)),
+                },
+                Error::Context { context, inner } => {
+                    let (code, text) = get_code_text(*inner);
+                    (code, context + "\n" + &text)
+                }
+            }
+        }
+        get_code_text(self).into_response()
+    }
+}
 
+fn thumbnail_filename(of: &Path) -> String {
+    let name = format!("{}", of.display());
     let mut hasher = md5_rs::Context::new();
     hasher.read(name.as_bytes());
-    let hash = hasher
+    hasher
         .finish()
         .into_iter()
         .map(|byte| format!("{:02x}", byte))
-        .collect::<String>();
-
-    thumbnail_dir.join(hash).with_extension("webp")
+        .collect::<String>()
+        + ".webp"
 }
 
 #[derive(Debug)]
@@ -244,9 +274,9 @@ impl MyFile {
 fn build_thumbnail_db(
     files: &[MyFile],
     thumbnail_dir: &Path,
-) -> Result<HashMap<PathBuf, PathBuf>, Error> {
+) -> Result<HashMap<PathBuf, String>, Error> {
     fn btdb_rec(
-        db: &mut HashMap<PathBuf, PathBuf>,
+        db: &mut HashMap<PathBuf, String>,
         files: &[MyFile],
         thumbnail_dir: &Path,
     ) -> Result<(), Error> {
@@ -259,8 +289,8 @@ fn build_thumbnail_db(
                     let path = path.canonicalize().with_context(|| {
                         format!("Canonicalizing thumbnail path at {}", path.display())
                     })?;
-                    let thumbnail_path = thumbnail_path(&path, &thumbnail_dir);
-                    db.insert(path, thumbnail_path);
+                    let thumbnail_filename = thumbnail_filename(&path);
+                    db.insert(path, thumbnail_filename);
                 }
                 MyFile::File(path) => {
                     tracing::debug!("skipping thumbnail for {}", path.display());
@@ -283,7 +313,7 @@ pub struct Database {
     #[allow(dead_code)]
     files: Vec<MyFile>,
     thumbnail_dir: PathBuf,
-    thumbnails: HashMap<PathBuf, PathBuf>,
+    thumbnails: HashMap<PathBuf, String>,
 }
 
 impl Database {
@@ -354,7 +384,7 @@ impl Database {
             created: String,
             modified: String,
             accessed: String,
-            thumbnail_path: Option<String>,
+            thumbnail_filename: Option<String>,
         }
 
         let mut serde_dirs = Vec::new();
@@ -380,7 +410,7 @@ impl Database {
                     config.page_root.as_deref().unwrap_or_default(),
                     path.strip_prefix(&config.file_dir)?.display()
                 ),
-                thumbnail_path: None,
+                thumbnail_filename: None,
             });
         }
 
@@ -407,13 +437,7 @@ impl Database {
                     config.page_root.as_deref().unwrap_or_default(),
                     path.strip_prefix(&config.file_dir)?.display()
                 ),
-                thumbnail_path: self
-                    .thumbnails
-                    .get(&path)
-                    .into_iter()
-                    .flat_map(|thumb| thumb.file_name())
-                    .map(|thumb| thumb.to_string_lossy().into_owned())
-                    .next(),
+                thumbnail_filename: self.thumbnails.get(&path).cloned().into_iter().next(),
             });
         }
 
@@ -454,6 +478,7 @@ impl Database {
     }
 
     fn read_config_and_make_dirs(config: &Config) -> Result<Database, Error> {
+        std::fs::create_dir_all(&config.thumbnail_dir)?;
         let thumbnail_dir = config.thumbnail_dir.canonicalize().with_context(|| {
             format!(
                 "Canonicalizing thumbnail dir {}",
@@ -493,6 +518,8 @@ impl Database {
 
     fn index_and_build_thumbnail_db(&self, config: &Config) -> Result<(), Error> {
         for (file_path, thumbnail_path) in self.thumbnails.iter() {
+            let thumbnail_path = config.thumbnail_dir.join(thumbnail_path);
+            let thumbnail_path = thumbnail_path.as_path();
             if !thumbnail_path.exists() || config.rebuild_thumbnails {
                 tracing::info!(
                     "making thumbnail for {} -> {}",
@@ -535,24 +562,15 @@ impl Database {
         Ok(())
     }
 
-    fn file_list_in(&self, config: &Config, path: &Path) -> Vec<String> {
-        let mut file_path = None;
-        if path == &self.file_dir {
-            file_path = Some(path);
-        } else {
-            for file in self.files.iter() {
-                if let Some(found) = file.find(path) {
-                    file_path = Some(found.path());
-                    break;
-                }
-            }
-        }
-        let Some(thefile) = file_path else {
-            return Vec::with_capacity(0);
-        };
-
+    fn file_list_matching(&self, config: &Config, include: impl Fn(&Path) -> bool) -> Vec<String> {
         let mut list = Vec::new();
-        fn walk(list: &mut Vec<String>, db: &Database, config: &Config, path: &Path) {
+        fn walk(
+            list: &mut Vec<String>,
+            db: &Database,
+            config: &Config,
+            include: &impl Fn(&Path) -> bool,
+            path: &Path,
+        ) {
             if path == &db.thumbnail_dir {
                 return;
             }
@@ -562,7 +580,11 @@ impl Database {
                     tracing::error!("couldn't strip prefix");
                     return;
                 };
-                list.push(strip_path.display().to_string());
+
+                // path?
+                if include(strip_path) {
+                    list.push(strip_path.display().to_string());
+                }
             }
 
             if path.is_dir() {
@@ -578,11 +600,11 @@ impl Database {
                         continue;
                     };
 
-                    walk(list, db, config, &child.path());
+                    walk(list, db, config, include, &child.path());
                 }
             }
         }
-        walk(&mut list, self, config, thefile);
+        walk(&mut list, self, config, &include, &self.file_dir);
         list
     }
 }
@@ -649,8 +671,14 @@ async fn main() -> Result<(), Error> {
         config: Arc::new(config),
     };
 
+    let page_root = state.config.page_root.clone().unwrap_or(String::new());
+    let search_endpoint = page_root.clone() + "/search";
+    let thumbnail_endpoint = page_root + "/thumbnail/{thumbnail}";
+
     let app = Router::new()
         .fallback(file_handler)
+        .route(&thumbnail_endpoint, axum::routing::get(thumbnail_handler))
+        .route(&search_endpoint, axum::routing::get(search_handler))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             basic_auth_layer,
@@ -696,59 +724,76 @@ async fn basic_auth_layer(
     }
 }
 
-#[derive(Deserialize, Debug)]
-struct FileHandlerRequest {
-    thumbnail: Option<String>,
-    filelist: Option<String>,
-}
-
 const THUMBNAIL_CACHE_POLICY: &str = "private, max-age=604800, immutable";
 const DIR_PAGE_CACHE_POLICY: &str = "private, max-age=3600, must-revalidate";
 
-async fn file_handler(
+async fn thumbnail_handler(
     State(state): State<AppState>,
-    Query(request): Query<FileHandlerRequest>,
-    uri: Uri,
+    axum::extract::Path(thumbnail): axum::extract::Path<String>,
 ) -> Response {
-    tracing::trace!("query: {:?}", request);
+    tracing::trace!("thumbnail: {}", thumbnail);
+    let Ok(mut thumb) = state.db.open_thumbnail(&thumbnail).await else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Could not read thumbnail",
+        )
+            .into_response();
+    };
+
+    let mut data = Vec::new();
+    match thumb.read_to_end(&mut data).await {
+        Ok(_) => {}
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Could not read thumbnail: {}", err),
+            )
+                .into_response()
+        }
+    }
+
+    return (
+        [
+            ("Content-Type", "image/webp"),
+            ("Cache-Control", THUMBNAIL_CACHE_POLICY),
+        ],
+        data,
+    )
+        .into_response();
+}
+
+#[derive(Deserialize, Debug)]
+struct Search {
+    regex: String,
+    case_insensitive: Option<bool>,
+}
+
+async fn search_handler(
+    State(state): State<AppState>,
+    Query(search): Query<Search>,
+) -> Result<Response, Error> {
+    tracing::trace!("search: {:?}", search);
+
+    let re = RegexBuilder::new(&search.regex)
+        .unicode(true)
+        .case_insensitive(search.case_insensitive.unwrap_or(true))
+        .build()?;
+
+    Ok(
+        Json(state.db.file_list_matching(&state.config, |path: &Path| {
+            re.is_match(&path.display().to_string())
+        }))
+        .into_response(),
+    )
+}
+
+async fn file_handler(State(state): State<AppState>, uri: Uri) -> Response {
     tracing::trace!("path: {:?}", uri.path());
 
     let page_root = state.config.page_root.as_deref().unwrap_or("/");
     let Some(request_path_str) = uri.path().strip_prefix(page_root) else {
         return (StatusCode::NOT_FOUND, "Path request not start with root").into_response();
     };
-
-    if let Some(thumbnail) = request.thumbnail {
-        tracing::trace!("Thumbnail request for {}", thumbnail);
-        let Ok(mut thumb) = state.db.open_thumbnail(&thumbnail).await else {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Could not read thumbnail",
-            )
-                .into_response();
-        };
-
-        let mut data = Vec::new();
-        match thumb.read_to_end(&mut data).await {
-            Ok(_) => {}
-            Err(err) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Could not read thumbnail: {}", err),
-                )
-                    .into_response()
-            }
-        }
-
-        return (
-            [
-                ("Content-Type", "image/webp"),
-                ("Cache-Control", THUMBNAIL_CACHE_POLICY),
-            ],
-            data,
-        )
-            .into_response();
-    }
 
     let request_path = request_path_str
         .split("/")
@@ -782,12 +827,6 @@ async fn file_handler(
         tracing::warn!("Symlink path traversal attempt >:(");
         return not_found;
     };
-
-    if let Some(_) = request.filelist {
-        tracing::debug!("File list request in {}", uri.path());
-        let file_list = state.db.file_list_in(&state.config, &full_request_path);
-        return Json(file_list).into_response();
-    }
 
     if full_request_path.is_dir() {
         if let Ok(mut context) = state.db.get_context_for(&state.config, &full_request_path) {
