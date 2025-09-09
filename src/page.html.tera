@@ -48,6 +48,15 @@
       #searchbox {
         flex-grow: 1;
       }
+      .header {
+        user-select: none;
+      }
+      .header.mostRecentFirst::after, .header.asc::after {
+        content: "▾";
+      }
+      .header.mostRecentLast::after, .header.desc::after {
+        content: "▴";
+      }
     </style>
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, minimal-ui">
   </head>
@@ -75,8 +84,10 @@
         <div class="header modified">modified</div>
         <div class="header accessed">accessed</div>
       </div>
+      {%- set_global last_dir = 0 -%}
       {% for dir in dirs %}
-        <div class="dir row">
+        {%- set_global last_dir = loop.index -%}
+        <div class="dir row" data-key="{{ loop.index }}">
           <div class="dir icon">📁</div>
           <div class="dir filename">
             <a href="{{ dir.filename }}">{{ dir.basename }}</a>
@@ -87,7 +98,7 @@
         </div>
       {% endfor %}
       {% for file in files %}
-        <div class="file row">
+        <div class="file row" data-key="{{ last_dir + loop.index }}">
           <div class="file icon">
             {% if file.thumbnail_filename %}
               <img loading="lazy" src="{{ page_root }}/thumbnail/{{ file.thumbnail_filename }}" />
@@ -223,6 +234,90 @@
       };
 
       searchEverywhere.onclick = _ => doSearchEverywhere();
+
+      let headerFilename = document.querySelector(".header.filename");
+      let headerCreated = document.querySelector(".header.created");
+      let headerModified = document.querySelector(".header.modified");
+
+      // first row is header
+      let [_header, ...files] = document.querySelectorAll(".row");
+      let dateSort = "default";
+      function setDateSort() {
+        if (dateSort == "default") {
+          dateSort = "mostRecentFirst";
+        } else if (dateSort == "mostRecentFirst") {
+          dateSort = "mostRecentLast";
+        } else if (dateSort == "mostRecentLast") {
+          dateSort = "default";
+        }
+      }
+      function doDateSort(by) {
+        files.sort((a, b) => {
+          if (dateSort == "mostRecentFirst") {
+            return new Date(a.children[by].innerText) < new Date(b.children[by].innerText);
+          } else if (dateSort == "mostRecentLast") {
+            return new Date(a.children[by].innerText) > new Date(b.children[by].innerText);
+          } else {
+            return parseInt(a.dataset["key"]) > parseInt(b.dataset["key"]);
+          }
+        }).forEach(file => {
+          file.parentElement.appendChild(file);
+        });
+      }
+      headerCreated.onclick = _ => {
+        let sorted = document.querySelector("." + dateSort);
+        if (sorted) sorted.classList.remove(dateSort);
+        if (sorted != headerCreated) dateSort = "default";
+        setDateSort();
+        headerCreated.classList.add(dateSort);
+        doDateSort(2);
+      };
+      headerModified.onclick = _ => {
+        let sorted = document.querySelector("." + dateSort);
+        if (sorted) sorted.classList.remove(dateSort);
+        if (sorted != headerModified) dateSort = "default";
+        setDateSort();
+        headerModified.classList.add(dateSort);
+        doDateSort(3);
+      };
+
+      let nameSort = "default";
+      function setNameSort() {
+        if (nameSort == "default") {
+          nameSort = "asc";
+        } else if (nameSort == "asc") {
+          nameSort = "desc";
+        } else if (nameSort == "desc") {
+          nameSort = "default";
+        }
+      }
+      function doNameSort() {
+        files.sort((a, b) => {
+          if (nameSort == "asc") {
+            return a.children[1].innerText.toUpperCase().localeCompare(b.children[1].innerText.toUpperCase());
+          } else if (nameSort == "desc") {
+            return -a.children[1].innerText.toUpperCase().localeCompare(b.children[1].innerText.toUpperCase());
+          } else {
+            return parseInt(a.dataset["key"]) > parseInt(b.dataset["key"]);
+          }
+        }).forEach(file => {
+          file.parentElement.appendChild(file);
+        });
+      }
+      headerFilename.onclick = _ => {
+        let dateSorted = document.querySelector("." + dateSort);
+        if (dateSorted) dateSorted.classList.remove(dateSort);
+        if (dateSort != "default") {
+          dateSort = "default";
+          doDateSort(2); // this fucking sucks without react but i do NOT want to set it up
+        }
+
+        headerFilename.classList.remove(nameSort);
+        setNameSort();
+        headerFilename.classList.add(nameSort);
+        doNameSort();
+      }
+
     </script>
   </body>
 </html>
