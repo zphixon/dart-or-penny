@@ -156,9 +156,7 @@
         for (result of document.querySelectorAll('.everywheresearch')) {
           result.remove();
         }
-        let i = -1;
         for (file of filelist) {
-          i += 1;
           let div = document.createElement('div');
           div.classList.add('everywheresearch');
 
@@ -167,8 +165,11 @@
           firsta.appendChild(document.createTextNode("{{ file_dir }}"));
           div.appendChild(firsta);
 
+          let split = file.split('{{ path_sep }}');
           var total = "{{ page_root }}";
-          for (part of file.split('{{ path_sep }}')) {
+          let i = -1;
+          for (part of split) {
+            i += 1;
             if (part === "") {
               continue;
             }
@@ -176,7 +177,7 @@
             total += "/" + part;
             let a = document.createElement('a');
             a.href = total;
-            if (i + 1 == filelist.length) {
+            if (i + 1 == split.length) {
               a.target = "_blank";
               a.rel = "noopener noreferrer";
             }
