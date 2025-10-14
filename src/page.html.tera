@@ -18,7 +18,7 @@
       .row {
         display: grid;
         gap: 1px;
-        grid-template-columns: 3em 3fr repeat(3, 1fr);
+        grid-template-columns: 3em 3fr repeat(3, minmax(12em, 1fr));
       }
       .row > div {
         background: white;
@@ -32,18 +32,32 @@
         align-items: center;
         justify-content: center;
       }
-      @media (max-width: 1150px) {
-        .modified, .accessed {
+      @media (max-width: 900px) {
+        .accessed {
           display: none;
         }
         .row {
-          grid-template-columns: 3em 3fr minmax(12em, 1fr);
+          grid-template-columns: 3em 3fr repeat(2, minmax(12em, 1fr));
+        }
+      }
+      @media (max-width: 650px) {
+        .created {
+          display: none;
+        }
+        .row {
+          grid-template-columns: 3em 3fr minmax(10em, 1fr);
         }
       }
       #searchboxdiv {
         display: flex;
         column-gap: 0.5em;
         padding-bottom: 1em;
+      }
+      @media (max-width: 530px) {
+        #searchboxdiv {
+          flex-direction: column;
+          row-gap: 0.5em;
+        }
       }
       #searchbox {
         flex-grow: 1;
@@ -56,6 +70,9 @@
       }
       .header.mostRecentLast::after, .header.desc::after {
         content: "▴";
+      }
+      #caseSensitiveDiv {
+        white-space: nowrap;
       }
     </style>
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, minimal-ui">
@@ -72,8 +89,10 @@
     <div id="searchboxdiv">
       <button id="clearSearch">clear search</button>
       <input id="searchbox" type="text" placeholder="🔎 search"/>
-      <label for="caseSensitive">case sensitive?</label>
-      <input id="caseSensitive" type="checkbox"/>
+      <div id="caseSensitiveDiv">
+        <label for="caseSensitive">case sensitive?</label>
+        <input id="caseSensitive" type="checkbox"/>
+      </div>
       <button id="searchEverywhere">search everywhere</button>
     </div>
     <div class="filetable">
