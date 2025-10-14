@@ -256,13 +256,6 @@ impl MyFile {
         }
     }
 
-    fn path(&self) -> &Path {
-        match self {
-            MyFile::Dir(local_path, _) => local_path,
-            MyFile::File(local_path) => local_path,
-        }
-    }
-
     fn len(&self) -> usize {
         match self {
             MyFile::Dir(_, my_files) => my_files.iter().map(|file| file.len()).sum(),
@@ -916,15 +909,24 @@ async fn file_handler(State(state): State<AppState>, uri: Uri) -> Response {
             }
         }
 
-        (
-            [(
-                "Content-Type",
-                mime_guess::from_path(&full_request_path)
-                    .first_or_octet_stream()
-                    .essence_str(),
-            )],
-            data,
-        )
-            .into_response()
+        fn make_response(mime: &str, data: Vec<u8>) -> axum::http::Response<axum::body::Body> {
+            ([("Content-Type", mime)], data).into_response()
+        }
+
+        // guess from the path extension first, then try reading magic. otherwise give up and say it's bytes
+        if let Some(mime) = mime_guess::from_path(&full_request_path).first() {
+            // not a &'static str, hence the helper function
+            tracing::trace!("got mime from path");
+            make_response(mime.essence_str(), data)
+        } else if let Some(mime) = infer::get(&data) {
+            tracing::trace!("got mime from data");
+            make_response(mime.mime_type(), data)
+        } else {
+            tracing::trace!("unknown mime");
+            make_response(
+                mime_guess::mime::APPLICATION_OCTET_STREAM.essence_str(),
+                data,
+            )
+        }
     }
 }
