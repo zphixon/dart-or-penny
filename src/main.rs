@@ -471,7 +471,7 @@ impl Database {
     }
 
     fn read_config_and_make_dirs(config: &Config) -> Result<Database, Error> {
-        std::fs::create_dir_all(&config.thumbnail_dir)?;
+        std::fs::create_dir_all(&config.thumbnail_dir).context("creating thumbnail dir")?;
         let thumbnail_dir = config.thumbnail_dir.canonicalize().with_context(|| {
             format!(
                 "Canonicalizing thumbnail dir {}",
@@ -630,6 +630,15 @@ struct AppState {
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    match run().await {
+        Ok(()) => {}
+        Err(e) => println!("{}", e),
+    }
+
+    Ok(())
+}
+
+async fn run() -> Result<(), Error> {
     tracing_subscriber::fmt::init();
 
     let args = std::env::args().collect::<Vec<_>>();
@@ -637,8 +646,9 @@ async fn main() -> Result<(), Error> {
         .get(1)
         .ok_or(ErrorInner::Config("need config file argument"))?;
 
-    let mut config: Config = toml::from_str(&std::fs::read_to_string(config_file)?)?;
-    config.file_dir = config.file_dir.canonicalize()?;
+    let mut config: Config =
+        toml::from_str(&std::fs::read_to_string(config_file).context("reading config file")?)?;
+    config.file_dir = config.file_dir.canonicalize().context("finding file dir")?;
     if !config.file_dir.is_dir() {
         tracing::error!("File dir is not a dir");
         return Err(ErrorInner::FileDirNotDir.into());
@@ -785,7 +795,11 @@ async fn file_handler(State(state): State<AppState>, uri: Uri) -> Response {
 
     let page_root = state.config.page_root.as_deref().unwrap_or("/");
     let Some(request_path_str) = uri.path().strip_prefix(page_root) else {
-        return (StatusCode::NOT_FOUND, "Path request not start with root").into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            Html(format!("Did you mean <a href={0}>{0}</a>?", page_root)),
+        )
+            .into_response();
     };
 
     let request_path = request_path_str
