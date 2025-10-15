@@ -602,6 +602,12 @@ impl Database {
     }
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Shortcut {
+    name: String,
+    url: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Config {
     bind: SocketAddr,
@@ -612,6 +618,8 @@ pub struct Config {
     rebuild_thumbnails: bool,
     page_root: Option<String>,
     basic_auth: Option<BasicAuthConfig>,
+    #[serde(default)]
+    shortcut: Vec<Shortcut>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -747,6 +755,7 @@ async fn pwa_handler(
         "site.webmanifest" => {
             let mut context = tera::Context::new();
             context.insert("page_root", &state.config.page_root);
+            context.insert("shortcuts", &state.config.shortcut);
 
             let Ok(manifest) = state.tera.render("webmanifest", &context) else {
                 return (
@@ -899,10 +908,9 @@ async fn file_handler(State(state): State<AppState>, uri: Uri) -> Response {
             struct TitlePart {
                 href: String,
                 path: String,
-                last: bool,
             }
 
-            let Ok(mut title_parts) = ancestors
+            let Ok(title_parts) = ancestors
                 .into_iter()
                 .rev()
                 .enumerate()
@@ -922,7 +930,6 @@ async fn file_handler(State(state): State<AppState>, uri: Uri) -> Response {
                             unc.strip_prefix(&state.config.file_dir)?.display()
                         ),
                         path,
-                        last: false,
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()
@@ -932,10 +939,6 @@ async fn file_handler(State(state): State<AppState>, uri: Uri) -> Response {
                     "Could not break page folder into parts for title",
                 )
                     .into_response();
-            };
-
-            if let Some(last) = title_parts.last_mut() {
-                last.last = true;
             };
 
             context.insert("tab_title", &full_request_path.display().to_string());

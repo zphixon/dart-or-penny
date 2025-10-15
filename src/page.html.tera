@@ -87,7 +87,7 @@
     <h1>
       {% for part in page_title_parts %}
         <a href="{{ part.href }}">{{ part.path }}</a>
-        {% if not part.last %}
+        {% if not loop.last %}
           /
         {% endif %}
       {% endfor %}
