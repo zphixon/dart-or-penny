@@ -667,6 +667,8 @@ async fn run() -> Result<(), Error> {
 
     let mut tera = Tera::default();
     tera.add_raw_template("page", PAGE_TEMPLATE).unwrap();
+    tera.add_raw_template("webmanifest", SITE_WEBMANIFEST_TEMPLATE)
+        .unwrap();
 
     let state = AppState {
         db: Arc::new(db),
@@ -677,11 +679,13 @@ async fn run() -> Result<(), Error> {
     let page_root = state.config.page_root.clone().unwrap_or(String::new());
     let search_endpoint = page_root.clone() + "/.dop/search";
     let thumbnail_endpoint = page_root.clone() + "/.dop/thumbnail/{thumbnail}";
+    let pwa_endpoint = page_root.clone() + "/.dop/pwa/{item}";
 
     let app = Router::new()
         .fallback(file_handler)
         .route(&thumbnail_endpoint, axum::routing::get(thumbnail_handler))
         .route(&search_endpoint, axum::routing::get(search_handler))
+        .route(&pwa_endpoint, axum::routing::get(pwa_handler))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             basic_auth_layer,
@@ -724,6 +728,55 @@ async fn basic_auth_layer(
             .into_response(),
 
         (None, _) => next.run(request).await,
+    }
+}
+
+const SITE_WEBMANIFEST_TEMPLATE: &str = include_str!("site.webmanifest.tera");
+const APPLE_TOUCH_ICON_PNG: &[u8] = include_bytes!("icons/apple-touch-icon.png");
+const FAVICON_96X96_PNG: &[u8] = include_bytes!("icons/favicon-96x96.png");
+const FAVICON_ICO: &[u8] = include_bytes!("icons/favicon.ico");
+const FAVICON_SVG: &[u8] = include_bytes!("icons/favicon.svg");
+const WEB_APP_MANIFEST_192X192_PNG: &[u8] = include_bytes!("icons/web-app-manifest-192x192.png");
+const WEB_APP_MANIFEST_512X512_PNG: &[u8] = include_bytes!("icons/web-app-manifest-512x512.png");
+
+async fn pwa_handler(
+    State(state): State<AppState>,
+    axum::extract::Path(item): axum::extract::Path<String>,
+) -> Response {
+    match item.as_str() {
+        "site.webmanifest" => {
+            let mut context = tera::Context::new();
+            context.insert("page_root", &state.config.page_root);
+
+            let Ok(manifest) = state.tera.render("webmanifest", &context) else {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "couldn't render web manifest template",
+                )
+                    .into_response();
+            };
+
+            return ([("Content-Type", "application/manifest+json")], manifest).into_response();
+        }
+
+        "apple-touch-icon.png" => {
+            ([("Content-Type", "image/png")], APPLE_TOUCH_ICON_PNG).into_response()
+        }
+        "favicon-96x96.png" => ([("Content-Type", "image/png")], FAVICON_96X96_PNG).into_response(),
+        "favicon.ico" => ([("Content-Type", "image/x-icon")], FAVICON_ICO).into_response(),
+        "favicon.svg" => ([("Content-Type", "image/svg+xml")], FAVICON_SVG).into_response(),
+        "web-app-manifest-192x192.png" => (
+            [("Content-Type", "image/png")],
+            WEB_APP_MANIFEST_192X192_PNG,
+        )
+            .into_response(),
+        "web-app-manifest-512x512.png" => (
+            [("Content-Type", "image/png")],
+            WEB_APP_MANIFEST_512X512_PNG,
+        )
+            .into_response(),
+
+        _ => "".into_response(),
     }
 }
 
