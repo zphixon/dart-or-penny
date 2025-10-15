@@ -120,7 +120,7 @@
         <div class="file row" data-key="{{ last_dir + loop.index }}">
           <div class="file icon">
             {% if file.thumbnail_filename %}
-              <img loading="lazy" src="{{ page_root }}/thumbnail/{{ file.thumbnail_filename }}" />
+              <img loading="lazy" src="{{ page_root }}/.dop/thumbnail/{{ file.thumbnail_filename }}" />
             {% else %}
               📃
             {% endif %}
@@ -213,7 +213,7 @@
       function doSearchEverywhere() {
         searchingEverywhere = true;
         fetch(
-          "{{ page_root }}/search?regex="
+          "{{ page_root }}/.dop/search?regex="
           + encodeURIComponent(searchbox.value)
           + (sensitive.checked ? "&case_insensitive=false" : "")
         )

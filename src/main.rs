@@ -675,8 +675,8 @@ async fn run() -> Result<(), Error> {
     };
 
     let page_root = state.config.page_root.clone().unwrap_or(String::new());
-    let search_endpoint = page_root.clone() + "/search";
-    let thumbnail_endpoint = page_root + "/thumbnail/{thumbnail}";
+    let search_endpoint = page_root.clone() + "/.dop/search";
+    let thumbnail_endpoint = page_root.clone() + "/.dop/thumbnail/{thumbnail}";
 
     let app = Router::new()
         .fallback(file_handler)
