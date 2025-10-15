@@ -19,7 +19,7 @@
     {% for shortcut in shortcuts %}
       {
         "name": "{{ shortcut.name }}",
-        "url": "{{ shortcut.url }}"
+        "url": "{{ page_root }}/{{ shortcut.url }}"
       }
       {% if not loop.last %} , {% endif %}
     {% endfor %}
