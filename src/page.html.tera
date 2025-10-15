@@ -7,7 +7,7 @@
     <link rel="shortcut icon" href="{{ page_root }}/.dop/pwa/favicon.ico" />
     <link rel="apple-touch-icon" sizes="180x180" href="{{ page_root }}/.dop/pwa/apple-touch-icon.png" />
     <meta name="apple-mobile-web-app-title" content="DartOrPenny" />
-    <link rel="manifest" href="{{ page_root }}/.dop/pwa/site.webmanifest" />
+    <link rel="manifest" href="{{ page_root }}/.dop/pwa/site.webmanifest" crossorigin="use-credentials" />
     <title>{{ tab_title }}</title>
     <style>
       h1 { color: green; }
