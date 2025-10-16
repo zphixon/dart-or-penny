@@ -126,7 +126,7 @@
         <div class="file row" data-key="{{ last_dir + loop.index }}">
           <div class="file icon">
             {% if file.thumbnail_filename %}
-              <img loading="lazy" src="{{ page_root }}/.dop/thumbnail/{{ file.thumbnail_filename }}" />
+              <svg id="{{ file.thumbnail_filename }}" data-thumbnail="{{ file.thumbnail_filename }}" class="thumbnailSpinner" width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><style>.spinner_P7sC{transform-origin:center;animation:spinner_svv2 .75s infinite linear}@keyframes spinner_svv2{100%{transform:rotate(360deg)}}</style><path d="M10.14,1.16a11,11,0,0,0-9,8.92A1.59,1.59,0,0,0,2.46,12,1.52,1.52,0,0,0,4.11,10.7a8,8,0,0,1,6.66-6.61A1.42,1.42,0,0,0,12,2.69h0A1.57,1.57,0,0,0,10.14,1.16Z" class="spinner_P7sC"/></svg>
             {% else %}
               📃
             {% endif %}
@@ -140,6 +140,7 @@
         </div>
       {% endfor %}
     </div>
+    <div hidden id="csrfToken">{{ csrf }}</div>
     <script type="text/javascript">
       let searchbox = document.getElementById("searchbox");
       let searchEverywhere = document.getElementById("searchEverywhere");
@@ -344,6 +345,70 @@
         doNameSort();
       }
 
+      // i think i want react actually fuck
+      let ttl = 604800016; // 1 week
+      function getThumbnailExpiry(thumbname) {
+        let storage = window.localStorage.getItem(thumbname);
+        if (storage === null) return null;
+        let object = JSON.parse(storage);
+        if (new Date().getTime() > object.expiry + ttl) return null;
+        return object.thumbnail;
+      }
+      function setThumbnailExpiry(thumbname, data) {
+        let storage = JSON.stringify({thumbnail: data, expiry: new Date().getTime() + ttl});
+        window.localStorage.setItem(thumbname, storage);
+      }
+
+      function setThumbnailElement(thumbname, data) {
+        let parent = document.getElementById(thumbname).parentElement;
+        while (parent.firstChild) {
+          parent.removeChild(parent.lastChild);
+        }
+        let image = document.createElement("img");
+        parent.appendChild(image);
+        image.src = "data:image/webp;base64," + data;
+      }
+
+      let maySend = false;
+      let csrf = document.getElementById("csrfToken").innerText;
+      let socket = new WebSocket("{{ page_root }}/.dop/thumbnail?csrf=" + encodeURIComponent(csrf));
+      socket.addEventListener("open", (_) => maySend = true);
+      socket.addEventListener("message", (e) => {
+        let response = JSON.parse(e.data);
+        if (response.err) {
+          console.error(response);
+        } else {
+          setThumbnailElement(response.thumbnail, response.data);
+          setThumbnailExpiry(response.thumbnail, response.data);
+        }
+      });
+
+      let queue = [];
+      let callback = (entries, observer) => {
+        entries.forEach((entry) => {
+          let thumbname = entry.target.dataset["thumbnail"];
+          if (entry.isIntersecting) {
+            let data = getThumbnailExpiry(thumbname);
+            if (data !== null) {
+              setThumbnailElement(thumbname, data);
+            } else if (maySend) {
+              while (queue.length > 0) {
+                socket.send(queue.pop());
+              }
+              socket.send(thumbname);
+            } else {
+              queue.push(thumbname);
+            }
+            observer.unobserve(entry.target);
+          }
+        });
+      };
+      let observer = new IntersectionObserver(callback, {
+        rootMargin: "150px 0px 150px 0px"
+      });
+      document.querySelectorAll(".thumbnailSpinner").forEach((spinner) => {
+        observer.observe(spinner);
+      });
     </script>
   </body>
 </html>

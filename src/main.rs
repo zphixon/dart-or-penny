@@ -1,5 +1,8 @@
 use axum::{
-    extract::{Query, Request, State},
+    extract::{
+        ws::{Message, WebSocket},
+        Query, Request, State, WebSocketUpgrade,
+    },
     http::{header, StatusCode, Uri},
     middleware::Next,
     response::{Html, IntoResponse, Response},
@@ -9,6 +12,7 @@ use axum_extra::{
     headers::{authorization::Basic, Authorization},
     TypedHeader,
 };
+use base64::Engine;
 use image::{buffer::ConvertBuffer, ImageBuffer, ImageReader, Rgb};
 use percent_encoding::percent_decode;
 use regex::RegexBuilder;
@@ -26,6 +30,7 @@ use tera::{Context as TeraContext, Tera};
 use thiserror::Error as ThisError;
 use tokio::{io::AsyncReadExt, net::TcpListener};
 use tower_http::compression::CompressionLayer;
+use tower_sessions::{MemoryStore, Session, SessionManagerLayer};
 
 const PAGE_TEMPLATE: &str = include_str!("./page.html.tera");
 
@@ -684,20 +689,28 @@ async fn run() -> Result<(), Error> {
         config: Arc::new(config),
     };
 
+    let session_store = MemoryStore::default();
+    let session_layer =
+        SessionManagerLayer::new(session_store).with_expiry(tower_sessions::Expiry::OnSessionEnd);
+
     let page_root = state.config.page_root.clone().unwrap_or(String::new());
     let search_endpoint = page_root.clone() + "/.dop/search";
-    let thumbnail_endpoint = page_root.clone() + "/.dop/thumbnail/{thumbnail}";
+    let thumbnail_socket_endpoint = page_root.clone() + "/.dop/thumbnail";
     let pwa_endpoint = page_root.clone() + "/.dop/pwa/{item}";
 
     let app = Router::new()
         .fallback(file_handler)
-        .route(&thumbnail_endpoint, axum::routing::get(thumbnail_handler))
+        .route(
+            &thumbnail_socket_endpoint,
+            axum::routing::get(thumbnail_socket_handler),
+        )
         .route(&search_endpoint, axum::routing::get(search_handler))
         .route(&pwa_endpoint, axum::routing::get(pwa_handler))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             basic_auth_layer,
         ))
+        .layer(session_layer)
         .layer(CompressionLayer::new())
         .with_state(state.clone());
 
@@ -789,42 +802,91 @@ async fn pwa_handler(
     }
 }
 
-const THUMBNAIL_CACHE_POLICY: &str = "private, max-age=604800, immutable";
-const DIR_PAGE_CACHE_POLICY: &str = "private, max-age=3600, must-revalidate";
+#[derive(Deserialize)]
+struct Csrf {
+    csrf: Option<String>,
+}
 
-async fn thumbnail_handler(
+async fn thumbnail_socket_handler(
     State(state): State<AppState>,
-    axum::extract::Path(thumbnail): axum::extract::Path<String>,
+    session: Session,
+    ws: WebSocketUpgrade,
+    Query(csrf): Query<Csrf>,
 ) -> Response {
-    tracing::trace!("thumbnail: {}", thumbnail);
-    let Ok(mut thumb) = state.db.open_thumbnail(&thumbnail).await else {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Could not read thumbnail",
-        )
-            .into_response();
+    let Some(csrf) = csrf.csrf else {
+        tracing::error!("csrf missing");
+        return (StatusCode::UNAUTHORIZED, "missing CSRF token in query").into_response();
     };
+    let Ok(Some(stored_csrf)) = session.get::<CsrfData>("csrf").await else {
+        tracing::error!("csrf fake");
+        return (StatusCode::UNAUTHORIZED, "no stored CSRF token").into_response();
+    };
+    let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(&csrf) else {
+        tracing::error!("csrf invalid");
+        return (StatusCode::BAD_REQUEST, "invalid CSRF token supplied").into_response();
+    };
+    if decoded != stored_csrf {
+        tracing::error!("csrf wrong");
+        return (StatusCode::UNAUTHORIZED, "incorrect CSRF token").into_response();
+    }
+    tracing::trace!("thumbnail socket opened");
+    ws.on_upgrade(|socket| thumbnail_streamer(state, socket))
+}
 
-    let mut data = Vec::new();
-    match thumb.read_to_end(&mut data).await {
-        Ok(_) => {}
-        Err(err) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Could not read thumbnail: {}", err),
-            )
-                .into_response()
-        }
+async fn thumbnail_streamer(state: AppState, mut socket: WebSocket) {
+    fn format_ok(name: &str, data: &[u8]) -> String {
+        format!(
+            r#"{{"thumbnail":"{}","data":"{}"}}"#,
+            name,
+            base64::engine::general_purpose::STANDARD.encode(&data)
+        )
+    }
+    fn format_err(name: &str, err: String) -> String {
+        format!(r#"{{"thumbnail":"{}","err":"{}"}}"#, name, err,)
     }
 
-    return (
-        [
-            ("Content-Type", "image/webp"),
-            ("Cache-Control", THUMBNAIL_CACHE_POLICY),
-        ],
-        data,
-    )
-        .into_response();
+    while let Some(Ok(msg)) = socket.recv().await {
+        let Ok(thumbnail_name) = msg.to_text() else {
+            tracing::error!("didn't understand thumbnail name");
+            return;
+        };
+
+        tracing::trace!("thumbnail: {}", thumbnail_name);
+        let Ok(mut thumb) = state.db.open_thumbnail(&thumbnail_name).await else {
+            let err = format!("couldn't open thumbnail {}", thumbnail_name);
+            tracing::error!("{}", err);
+            let Ok(_) = socket
+                .send(Message::Text(format_err(thumbnail_name, err).into()))
+                .await
+            else {
+                tracing::error!("also couldn't warn user");
+                return;
+            };
+            continue;
+        };
+
+        let mut data = Vec::new();
+        let Ok(_) = thumb.read_to_end(&mut data).await else {
+            let err = format!("couldn't read thumbnail {}", thumbnail_name);
+            tracing::error!("{}", err);
+            let Ok(_) = socket
+                .send(Message::Text(format_err(thumbnail_name, err).into()))
+                .await
+            else {
+                tracing::error!("also couldn't warn user");
+                return;
+            };
+            continue;
+        };
+
+        let Ok(_) = socket
+            .send(Message::Text(format_ok(thumbnail_name, &data).into()))
+            .await
+        else {
+            tracing::error!("couldn't send thumbnail {}", thumbnail_name);
+            continue;
+        };
+    }
 }
 
 #[derive(Deserialize, Debug)]
@@ -852,8 +914,34 @@ async fn search_handler(
     )
 }
 
-async fn file_handler(State(state): State<AppState>, uri: Uri) -> Response {
+const DIR_PAGE_CACHE_POLICY: &str = "private, max-age=3600, must-revalidate";
+
+type CsrfData = [u8; 16];
+
+async fn file_handler(State(state): State<AppState>, session: Session, uri: Uri) -> Response {
     tracing::trace!("path: {:?}", uri.path());
+
+    let csrf = match session.get::<CsrfData>("csrf").await {
+        Ok(Some(csrf)) => csrf,
+        Ok(None) => {
+            let csrf = rand::random::<CsrfData>();
+            if let Err(err) = session.insert("csrf", csrf).await {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Html(format!("couldn't set csrf token: {}", err)),
+                )
+                    .into_response();
+            };
+            csrf
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(format!("couldn't get csrf token: {}", err)),
+            )
+                .into_response();
+        }
+    };
 
     let page_root = state.config.page_root.as_deref().unwrap_or("/");
     let Some(request_path_str) = uri.path().strip_prefix(page_root) else {
@@ -944,6 +1032,10 @@ async fn file_handler(State(state): State<AppState>, uri: Uri) -> Response {
             context.insert("tab_title", &full_request_path.display().to_string());
             context.insert("page_title_parts", &title_parts);
             context.insert("page_root", state.config.page_root.as_deref().unwrap_or(""));
+            context.insert(
+                "csrf",
+                &base64::engine::general_purpose::STANDARD.encode(csrf),
+            );
 
             match state.tera.render("page", &context) {
                 Ok(page) => {
