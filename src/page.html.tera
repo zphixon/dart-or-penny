@@ -369,10 +369,26 @@
         image.src = "data:image/webp;base64," + data;
       }
 
+      let queue = [];
       let maySend = false;
       let csrf = document.getElementById("csrfToken").innerText;
       let socket = new WebSocket("{{ page_root }}/.dop/thumbnail?csrf=" + encodeURIComponent(csrf));
-      socket.addEventListener("open", (_) => maySend = true);
+      socket.addEventListener("open", (_) => {
+        maySend = true;
+        function clearQueue() {
+          while (queue.length > 0) {
+            socket.send(queue.pop());
+          }
+        }
+        clearQueue();
+        setTimeout(() => {
+          // not sure which thread this event callback runs on but
+          // just run this again in case the ui thread (where the
+          // intersection observer is running its callback) is out
+          // of sync with maySend. idk how javascript works lol
+          clearQueue();
+        }, 100);
+      });
       socket.addEventListener("message", (e) => {
         let response = JSON.parse(e.data);
         if (response.err) {
@@ -383,7 +399,6 @@
         }
       });
 
-      let queue = [];
       let callback = (entries, observer) => {
         entries.forEach((entry) => {
           let thumbname = entry.target.dataset["thumbnail"];
@@ -392,9 +407,6 @@
             if (data !== null) {
               setThumbnailElement(thumbname, data);
             } else if (maySend) {
-              while (queue.length > 0) {
-                socket.send(queue.pop());
-              }
               socket.send(thumbname);
             } else {
               queue.push(thumbname);
