@@ -1,19 +1,16 @@
 use axum::{
-    extract::{
-        ws::{Message, WebSocket},
-        Query, Request, State, WebSocketUpgrade,
-    },
-    http::{header, StatusCode, Uri},
+    Json, Router,
+    extract::{Query, Request, State},
+    http::{StatusCode, Uri, header},
     middleware::Next,
     response::{Html, IntoResponse, Response},
-    Json, Router,
 };
 use axum_extra::{
-    headers::{authorization::Basic, Authorization},
     TypedHeader,
+    headers::{Authorization, authorization::Basic},
 };
 use base64::Engine;
-use image::{buffer::ConvertBuffer, ImageBuffer, ImageReader, Rgb};
+use image::{ImageBuffer, ImageReader, Rgb, buffer::ConvertBuffer};
 use percent_encoding::percent_decode;
 use regex::RegexBuilder;
 use serde::{Deserialize, Serialize};
@@ -30,7 +27,6 @@ use tera::{Context as TeraContext, Tera};
 use thiserror::Error as ThisError;
 use tokio::{io::AsyncReadExt, net::TcpListener};
 use tower_http::compression::CompressionLayer;
-use tower_sessions::{MemoryStore, Session, SessionManagerLayer};
 
 const PAGE_TEMPLATE: &str = include_str!("./page.html.tera");
 
@@ -311,7 +307,8 @@ pub struct Database {
     #[allow(dead_code)]
     files: Vec<MyFile>,
     thumbnail_dir: PathBuf,
-    thumbnails: HashMap<PathBuf, String>,
+    thumbnail_filenames: HashMap<PathBuf, String>,
+    thumbnail_cache: moka::future::Cache<String, Vec<u8>>,
 }
 
 impl Database {
@@ -319,10 +316,14 @@ impl Database {
         let thumbnail_path = self.thumbnail_dir.join(thumb);
         Ok(tokio::fs::File::open(thumbnail_path)
             .await
-            .with_context(|| format!("Reading thumbnail {}", thumb))?)
+            .with_context(|| format!("Opening thumbnail {}", thumb))?)
     }
 
-    fn get_context_for(&self, config: &Config, serve_dir: &Path) -> Result<TeraContext, Error> {
+    async fn get_context_for(
+        &self,
+        config: &Config,
+        serve_dir: &Path,
+    ) -> Result<TeraContext, Error> {
         let mut context = TeraContext::new();
 
         let mut dirs = Vec::new();
@@ -382,12 +383,12 @@ impl Database {
             created: String,
             modified: String,
             accessed: String,
-            thumbnail_filename: Option<String>,
+            thumbnail_data: Option<String>,
         }
 
         let mut serde_dirs = Vec::new();
         for (path, basename) in dirs.into_iter() {
-            let meta = path.metadata();
+            let meta = tokio::fs::metadata(&path).await;
             let (created, modified, accessed) = meta
                 .map(|meta| {
                     (
@@ -408,13 +409,13 @@ impl Database {
                     config.page_root.as_deref().unwrap_or_default(),
                     path.strip_prefix(&config.file_dir)?.display()
                 ),
-                thumbnail_filename: None,
+                thumbnail_data: None,
             });
         }
 
         let mut serde_files = Vec::new();
         for (path, basename) in files.into_iter() {
-            let meta = path.metadata();
+            let meta = tokio::fs::metadata(&path).await;
             let (created, modified, accessed) = meta
                 .map(|meta| {
                     (
@@ -424,6 +425,35 @@ impl Database {
                     )
                 })
                 .unwrap_or_default();
+
+            let thumbnail_filename = self
+                .thumbnail_filenames
+                .get(&path)
+                .cloned()
+                .into_iter()
+                .next();
+
+            let thumbnail_data = if let Some(thumb) = thumbnail_filename {
+                if let Some(data) = self.thumbnail_cache.get(&thumb).await {
+                    Some(data)
+                } else {
+                    let mut data = Vec::new();
+                    if let Ok(mut file) = self.open_thumbnail(&thumb).await
+                        && file.read_to_end(&mut data).await.is_ok()
+                    {
+                        self.thumbnail_cache.insert(thumb, data.clone()).await;
+                        Some(data)
+                    } else {
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            let thumbnail_data = thumbnail_data
+                .into_iter()
+                .map(|data| base64::engine::general_purpose::STANDARD.encode(data))
+                .next();
 
             serde_files.push(PageItem {
                 basename,
@@ -435,7 +465,7 @@ impl Database {
                     config.page_root.as_deref().unwrap_or_default(),
                     path.strip_prefix(&config.file_dir)?.display()
                 ),
-                thumbnail_filename: self.thumbnails.get(&path).cloned().into_iter().next(),
+                thumbnail_data,
             });
         }
 
@@ -510,12 +540,13 @@ impl Database {
             file_dir,
             files,
             thumbnail_dir,
-            thumbnails,
+            thumbnail_filenames: thumbnails,
+            thumbnail_cache: moka::future::Cache::new(4096),
         })
     }
 
     fn index_and_build_thumbnail_db(&self, config: &Config) -> Result<(), Error> {
-        for (file_path, thumbnail_path) in self.thumbnails.iter() {
+        for (file_path, thumbnail_path) in self.thumbnail_filenames.iter() {
             let thumbnail_path = config.thumbnail_dir.join(thumbnail_path);
             let thumbnail_path = thumbnail_path.as_path();
             if !thumbnail_path.exists() || config.rebuild_thumbnails {
@@ -689,28 +720,18 @@ async fn run() -> Result<(), Error> {
         config: Arc::new(config),
     };
 
-    let session_store = MemoryStore::default();
-    let session_layer =
-        SessionManagerLayer::new(session_store).with_expiry(tower_sessions::Expiry::OnSessionEnd);
-
     let page_root = state.config.page_root.clone().unwrap_or(String::new());
     let search_endpoint = page_root.clone() + "/.dop/search";
-    let thumbnail_socket_endpoint = page_root.clone() + "/.dop/thumbnail";
     let pwa_endpoint = page_root.clone() + "/.dop/pwa/{item}";
 
     let app = Router::new()
         .fallback(file_handler)
-        .route(
-            &thumbnail_socket_endpoint,
-            axum::routing::get(thumbnail_socket_handler),
-        )
         .route(&search_endpoint, axum::routing::get(search_handler))
         .route(&pwa_endpoint, axum::routing::get(pwa_handler))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             basic_auth_layer,
         ))
-        .layer(session_layer)
         .layer(CompressionLayer::new())
         .with_state(state.clone());
 
@@ -802,93 +823,6 @@ async fn pwa_handler(
     }
 }
 
-#[derive(Deserialize)]
-struct Csrf {
-    csrf: Option<String>,
-}
-
-async fn thumbnail_socket_handler(
-    State(state): State<AppState>,
-    session: Session,
-    ws: WebSocketUpgrade,
-    Query(csrf): Query<Csrf>,
-) -> Response {
-    let Some(csrf) = csrf.csrf else {
-        tracing::error!("csrf missing");
-        return (StatusCode::UNAUTHORIZED, "missing CSRF token in query").into_response();
-    };
-    let Ok(Some(stored_csrf)) = session.get::<CsrfData>("csrf").await else {
-        tracing::error!("csrf fake");
-        return (StatusCode::UNAUTHORIZED, "no stored CSRF token").into_response();
-    };
-    let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(&csrf) else {
-        tracing::error!("csrf invalid");
-        return (StatusCode::BAD_REQUEST, "invalid CSRF token supplied").into_response();
-    };
-    if decoded != stored_csrf {
-        tracing::error!("csrf wrong");
-        return (StatusCode::UNAUTHORIZED, "incorrect CSRF token").into_response();
-    }
-    tracing::trace!("thumbnail socket opened");
-    ws.on_upgrade(|socket| thumbnail_streamer(state, socket))
-}
-
-async fn thumbnail_streamer(state: AppState, mut socket: WebSocket) {
-    fn format_ok(name: &str, data: &[u8]) -> String {
-        format!(
-            r#"{{"thumbnail":"{}","data":"{}"}}"#,
-            name,
-            base64::engine::general_purpose::STANDARD.encode(&data)
-        )
-    }
-    fn format_err(name: &str, err: String) -> String {
-        format!(r#"{{"thumbnail":"{}","err":"{}"}}"#, name, err,)
-    }
-
-    while let Some(Ok(msg)) = socket.recv().await {
-        let Ok(thumbnail_name) = msg.to_text() else {
-            tracing::error!("didn't understand thumbnail name");
-            return;
-        };
-
-        tracing::trace!("thumbnail: {}", thumbnail_name);
-        let Ok(mut thumb) = state.db.open_thumbnail(&thumbnail_name).await else {
-            let err = format!("couldn't open thumbnail {}", thumbnail_name);
-            tracing::error!("{}", err);
-            let Ok(_) = socket
-                .send(Message::Text(format_err(thumbnail_name, err).into()))
-                .await
-            else {
-                tracing::error!("also couldn't warn user");
-                return;
-            };
-            continue;
-        };
-
-        let mut data = Vec::new();
-        let Ok(_) = thumb.read_to_end(&mut data).await else {
-            let err = format!("couldn't read thumbnail {}", thumbnail_name);
-            tracing::error!("{}", err);
-            let Ok(_) = socket
-                .send(Message::Text(format_err(thumbnail_name, err).into()))
-                .await
-            else {
-                tracing::error!("also couldn't warn user");
-                return;
-            };
-            continue;
-        };
-
-        let Ok(_) = socket
-            .send(Message::Text(format_ok(thumbnail_name, &data).into()))
-            .await
-        else {
-            tracing::error!("couldn't send thumbnail {}", thumbnail_name);
-            continue;
-        };
-    }
-}
-
 #[derive(Deserialize, Debug)]
 struct Search {
     regex: String,
@@ -916,32 +850,8 @@ async fn search_handler(
 
 const DIR_PAGE_CACHE_POLICY: &str = "private, max-age=3600, must-revalidate";
 
-type CsrfData = [u8; 16];
-
-async fn file_handler(State(state): State<AppState>, session: Session, uri: Uri) -> Response {
+async fn file_handler(State(state): State<AppState>, uri: Uri) -> Response {
     tracing::trace!("path: {:?}", uri.path());
-
-    let csrf = match session.get::<CsrfData>("csrf").await {
-        Ok(Some(csrf)) => csrf,
-        Ok(None) => {
-            let csrf = rand::random::<CsrfData>();
-            if let Err(err) = session.insert("csrf", csrf).await {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Html(format!("couldn't set csrf token: {}", err)),
-                )
-                    .into_response();
-            };
-            csrf
-        }
-        Err(err) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Html(format!("couldn't get csrf token: {}", err)),
-            )
-                .into_response();
-        }
-    };
 
     let page_root = state.config.page_root.as_deref().unwrap_or("/");
     let Some(request_path_str) = uri.path().strip_prefix(page_root) else {
@@ -986,7 +896,11 @@ async fn file_handler(State(state): State<AppState>, session: Session, uri: Uri)
     };
 
     if full_request_path.is_dir() {
-        if let Ok(mut context) = state.db.get_context_for(&state.config, &full_request_path) {
+        if let Ok(mut context) = state
+            .db
+            .get_context_for(&state.config, &full_request_path)
+            .await
+        {
             let ancestors = full_request_path
                 .ancestors()
                 .take_while(|parent| *parent != state.db.file_dir.parent().unwrap())
@@ -1032,10 +946,6 @@ async fn file_handler(State(state): State<AppState>, session: Session, uri: Uri)
             context.insert("tab_title", &full_request_path.display().to_string());
             context.insert("page_title_parts", &title_parts);
             context.insert("page_root", state.config.page_root.as_deref().unwrap_or(""));
-            context.insert(
-                "csrf",
-                &base64::engine::general_purpose::STANDARD.encode(csrf),
-            );
 
             match state.tera.render("page", &context) {
                 Ok(page) => {
@@ -1067,7 +977,7 @@ async fn file_handler(State(state): State<AppState>, session: Session, uri: Uri)
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "Could not read file data",
                 )
-                    .into_response()
+                    .into_response();
             }
         }
 
