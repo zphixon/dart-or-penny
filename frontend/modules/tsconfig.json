@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    /* Visit https://aka.ms/tsconfig to read more about this file */
+    "target": "ES2020",
+    "module": "ES2020",
+    "rootDir": "./src",
+    "outDir": "../static",
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "jsx": "preserve",
+    "paths": {
+      "react-select": ["./node_modules/react-select/dist/react-select.cjs.d.ts"],
+      "react-select/async": ["./node_modules/react-select/async/dist/react-select-async.cjs.d.ts"],
+      "usehooks-ts": ["./node_modules/usehooks-ts/dist/index"]
+    },
+  },
+  "include": ["**/*.ts", "**/*.tsx"]
+}

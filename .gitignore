@@ -1,2 +1,4 @@
 target
 eg
+frontend/static
+frontend/modules/node_modules

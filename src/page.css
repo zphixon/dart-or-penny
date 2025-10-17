@@ -1,0 +1,91 @@
+h1 {
+    color: green;
+}
+
+.icon>img {
+    max-height: 3em;
+    max-width: 3em;
+}
+
+.filetable {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 1px;
+    background: green;
+}
+
+.row {
+    display: grid;
+    gap: 1px;
+    grid-template-columns: 3em 3fr repeat(3, minmax(12em, 1fr));
+}
+
+.row>div {
+    background: white;
+    padding: 0.25em;
+}
+
+.row>.filename {
+    word-break: break-all;
+}
+
+.icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+@media (max-width: 900px) {
+    .accessed {
+        display: none;
+    }
+
+    .row {
+        grid-template-columns: 3em 3fr repeat(2, minmax(12em, 1fr));
+    }
+}
+
+@media (max-width: 650px) {
+    .created {
+        display: none;
+    }
+
+    .row {
+        grid-template-columns: 3em 3fr minmax(10em, 1fr);
+    }
+}
+
+#searchboxdiv {
+    display: flex;
+    column-gap: 0.5em;
+    padding-bottom: 1em;
+}
+
+@media (max-width: 530px) {
+    #searchboxdiv {
+        flex-direction: column;
+        row-gap: 0.5em;
+    }
+}
+
+#searchbox {
+    flex-grow: 1;
+}
+
+.header {
+    user-select: none;
+}
+
+.header.mostRecentFirst::after,
+.header.asc::after {
+    content: "▾";
+}
+
+.header.mostRecentLast::after,
+.header.desc::after {
+    content: "▴";
+}
+
+#caseSensitiveDiv {
+    white-space: nowrap;
+}

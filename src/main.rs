@@ -314,6 +314,25 @@ pub struct Database {
     thumbnails: HashMap<PathBuf, String>,
 }
 
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
+enum PageItemKind {
+    Dir,
+    File,
+}
+
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
+struct PageItem {
+    kind: PageItemKind,
+    basename: String,
+    filename: String,
+    created: String,
+    modified: String,
+    accessed: String,
+    thumbnail_filename: Option<String>,
+}
+
 impl Database {
     async fn open_thumbnail(&self, thumb: &str) -> Result<tokio::fs::File, Error> {
         let thumbnail_path = self.thumbnail_dir.join(thumb);
@@ -375,17 +394,7 @@ impl Database {
             )
         }
 
-        #[derive(Serialize)]
-        struct PageItem {
-            basename: String,
-            filename: String,
-            created: String,
-            modified: String,
-            accessed: String,
-            thumbnail_filename: Option<String>,
-        }
-
-        let mut serde_dirs = Vec::new();
+        let mut page_items = Vec::new();
         for (path, basename) in dirs.into_iter() {
             let meta = path.metadata();
             let (created, modified, accessed) = meta
@@ -398,7 +407,8 @@ impl Database {
                 })
                 .unwrap_or_default();
 
-            serde_dirs.push(PageItem {
+            page_items.push(PageItem {
+                kind: PageItemKind::Dir,
                 basename,
                 created,
                 modified,
@@ -412,7 +422,6 @@ impl Database {
             });
         }
 
-        let mut serde_files = Vec::new();
         for (path, basename) in files.into_iter() {
             let meta = path.metadata();
             let (created, modified, accessed) = meta
@@ -425,7 +434,8 @@ impl Database {
                 })
                 .unwrap_or_default();
 
-            serde_files.push(PageItem {
+            page_items.push(PageItem {
+                kind: PageItemKind::File,
                 basename,
                 created,
                 modified,
@@ -439,8 +449,7 @@ impl Database {
             });
         }
 
-        context.insert("dirs", &serde_dirs);
-        context.insert("files", &serde_files);
+        context.insert("items", &page_items);
 
         if serve_dir == config.file_dir {
             context.insert(
@@ -463,15 +472,12 @@ impl Database {
         context.insert(
             "path_sep",
             if cfg!(target_os = "windows") {
-                "\\\\"
+                "\\"
             } else {
                 "/"
             },
         );
-        context.insert(
-            "file_dir",
-            &config.file_dir.display().to_string().replace("\\", "\\\\"),
-        );
+        context.insert("file_dir", &config.file_dir.display().to_string());
         Ok(context)
     }
 
@@ -697,6 +703,7 @@ async fn run() -> Result<(), Error> {
     let search_endpoint = page_root.clone() + "/.dop/search";
     let thumbnail_socket_endpoint = page_root.clone() + "/.dop/thumbnail";
     let pwa_endpoint = page_root.clone() + "/.dop/pwa/{item}";
+    let static_endpoint = page_root.clone() + "/.dop/static/{item}";
 
     let app = Router::new()
         .fallback(file_handler)
@@ -706,6 +713,7 @@ async fn run() -> Result<(), Error> {
         )
         .route(&search_endpoint, axum::routing::get(search_handler))
         .route(&pwa_endpoint, axum::routing::get(pwa_handler))
+        .route(&static_endpoint, axum::routing::get(static_handler))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             basic_auth_layer,
@@ -798,7 +806,22 @@ async fn pwa_handler(
         )
             .into_response(),
 
-        _ => "".into_response(),
+        _ => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
+}
+
+async fn static_handler(
+    //State(state): State<AppState>,
+    axum::extract::Path(item): axum::extract::Path<String>,
+) -> Response {
+    match item.as_str() {
+        "page.css" => ([("Content-Type", "text/css")], include_str!("page.css")).into_response(),
+        "page.js" => (
+            [("Content-Type", "text/javascript")],
+            include_str!("../frontend/static/page.js"),
+        )
+            .into_response(),
+        _ => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
 }
 
@@ -833,18 +856,23 @@ async fn thumbnail_socket_handler(
     ws.on_upgrade(|socket| thumbnail_streamer(state, socket))
 }
 
-async fn thumbnail_streamer(state: AppState, mut socket: WebSocket) {
-    fn format_ok(name: &str, data: &[u8]) -> String {
-        format!(
-            r#"{{"thumbnail":"{}","data":"{}"}}"#,
-            name,
-            base64::engine::general_purpose::STANDARD.encode(&data)
-        )
-    }
-    fn format_err(name: &str, err: String) -> String {
-        format!(r#"{{"thumbnail":"{}","err":"{}"}}"#, name, err,)
-    }
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
+#[serde(tag = "type")]
+struct ThumbnailResponse {
+    thumbnail: String,
+    data: String,
+}
 
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
+#[serde(tag = "type")]
+struct ThumbnailError {
+    thumbnail: String,
+    err: String,
+}
+
+async fn thumbnail_streamer(state: AppState, mut socket: WebSocket) {
     while let Some(Ok(msg)) = socket.recv().await {
         let Ok(thumbnail_name) = msg.to_text() else {
             tracing::error!("didn't understand thumbnail name");
@@ -856,7 +884,14 @@ async fn thumbnail_streamer(state: AppState, mut socket: WebSocket) {
             let err = format!("couldn't open thumbnail {}", thumbnail_name);
             tracing::error!("{}", err);
             let Ok(_) = socket
-                .send(Message::Text(format_err(thumbnail_name, err).into()))
+                .send(Message::Text(
+                    serde_json::to_string(&ThumbnailError {
+                        thumbnail: String::from(thumbnail_name),
+                        err,
+                    })
+                    .unwrap()
+                    .into(),
+                ))
                 .await
             else {
                 tracing::error!("also couldn't warn user");
@@ -870,7 +905,14 @@ async fn thumbnail_streamer(state: AppState, mut socket: WebSocket) {
             let err = format!("couldn't read thumbnail {}", thumbnail_name);
             tracing::error!("{}", err);
             let Ok(_) = socket
-                .send(Message::Text(format_err(thumbnail_name, err).into()))
+                .send(Message::Text(
+                    serde_json::to_string(&ThumbnailError {
+                        thumbnail: String::from(thumbnail_name),
+                        err,
+                    })
+                    .unwrap()
+                    .into(),
+                ))
                 .await
             else {
                 tracing::error!("also couldn't warn user");
@@ -880,7 +922,14 @@ async fn thumbnail_streamer(state: AppState, mut socket: WebSocket) {
         };
 
         let Ok(_) = socket
-            .send(Message::Text(format_ok(thumbnail_name, &data).into()))
+            .send(Message::Text(
+                serde_json::to_string(&ThumbnailResponse {
+                    thumbnail: String::from(thumbnail_name),
+                    data: base64::engine::general_purpose::STANDARD.encode(data),
+                })
+                .unwrap()
+                .into(),
+            ))
             .await
         else {
             tracing::error!("couldn't send thumbnail {}", thumbnail_name);

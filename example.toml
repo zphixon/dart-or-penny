@@ -1,6 +1,6 @@
 bind = '0.0.0.0:8888'
 page_root = '/files'
-thumbnail_dir = 'eg/.dop'
+thumbnail_dir = 'C:/Users/Zack/source/server/dart-or-penny/eg/.dop'
 file_dir = 'C:/Users/Zack/Pictures'
 thumbnail_size = 75
 
