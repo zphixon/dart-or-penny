@@ -22,25 +22,18 @@
       .row {
         display: grid;
         grid-template-columns: 3em 3fr repeat(3, minmax(12em, 1fr));
-        border-top: 1px solid green;
+        border-bottom: 1px solid green;
         border-right: 1px solid green;
       }
       .row > div {
         padding: 0.25em;
         border-left: 1px solid green;
       }
-      .header.row, .header.row > div {
-        border: none;
-      }
-      .header.row > :not(:first-child) {
+      .header > :not(:first-child) {
         border-top: 1px solid green;
-        border-right: 1px solid green;
       }
-      .header.row > :nth-child(2) {
-        border-left: 1px solid green;
-      }
-      .row:last-child {
-        border-bottom: 1px solid green;
+      .header.topleft {
+        border: none;
       }
       .row > .filename {
         word-break: break-all;
@@ -99,6 +92,16 @@
       }
       .header.mostRecentLast::after, .header.desc::after {
         content: " ▴";
+      }
+      a, a:visited {
+        color: darkgreen;
+      }
+      .everywheresearch {
+        padding: 0.3em;
+      }
+      #numfiles {
+        margin-left: 0.3em;
+        margin-top: 0.3em;
       }
     </style>
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, minimal-ui">
@@ -165,7 +168,7 @@
       {% endfor %}
     </div>
 
-    <div>
+    <div id="numfiles">
       {% set here = dirs | concat(with=files) | length %}
       {% set in_subdirs = num_files - here + 1 %} {# why +1?? #}
       <span class="number">{{ here }}</span>
@@ -175,8 +178,9 @@
     </div>
 
     <script type="text/javascript">
-      for (let numfiles of document.querySelectorAll(".number")) {
-        numfiles.innerText = new Intl.NumberFormat().format(parseInt(numfiles.innerText));
+      let numfiles = document.getElementById("numfiles");
+      for (let number of document.querySelectorAll(".number")) {
+        number.innerText = new Intl.NumberFormat().format(parseInt(number.innerText));
       }
 
       let searchbox = document.getElementById("searchbox");
@@ -206,12 +210,15 @@
           if (matches(filename.innerText, filterQuery)) {
             // setting display to empty string resets to previous display property
             row.style.display = "";
+            numfiles.style.display = "";
           } else {
             row.style.display = "none";
+            numfiles.style.display = "none";
           }
         }
       }
 
+      let pathSep = `{{ path_sep | json_encode() | replace(from='"', to='') }}`;
       function displayEverywhereSearchResults(filelist) {
         let fileTable = document.querySelector(".filetable");
         fileTable.style.display = 'none';
@@ -228,7 +235,7 @@
           firsta.appendChild(document.createTextNode("{{ file_dir }}"));
           div.appendChild(firsta);
 
-          let split = file.split('{{ path_sep }}');
+          let split = file.split(pathSep);
           var total = "{{ page_root }}";
           let i = -1;
           for (part of split) {
@@ -245,7 +252,7 @@
               a.rel = "noopener noreferrer";
             }
             a.appendChild(document.createTextNode(part));
-            div.appendChild(document.createTextNode("/"));
+            div.appendChild(document.createTextNode(" " + pathSep + " "));
             div.appendChild(a);
           }
 
