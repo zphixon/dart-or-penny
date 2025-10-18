@@ -33,6 +33,9 @@ function PageItemListRow({ item }: PageItemListRowProps) {
   );
 }
 
+type SortCol = "filename" | "created" | "modified" | "accessed";
+type SortOrder = "dirsFirst" | "asc" | "desc";
+
 interface PageItemListProps {
   items: types.PageItem[];
   pathSep: string;
@@ -45,7 +48,8 @@ function PageItemList({ items, pathSep, fileDir, numFiles, pageRoot }: PageItemL
   let [searchResults, setSearchResults] = useState<string[]>([]);
   let [caseSensitive, setCaseSensitive] = useState(false);
   let [searchInput, setSearchInput] = useState("");
-
+  let [sortCol, setSortCol] = useState<SortCol>("filename");
+  let [sortOrder, setSortOrder] = useState<SortOrder>("dirsFirst");
   let doSearchEverywhere = useCallback(() => {
     let path =
       pageRoot +
@@ -120,13 +124,10 @@ function PageItemList({ items, pathSep, fileDir, numFiles, pageRoot }: PageItemL
     </div>
   );
 
-  let filteredItems = items;
-  if (searchInput !== "") {
-    let flags = caseSensitive ? "" : "i";
-    filteredItems = items.filter((item) => item.filename.search(new RegExp(searchInput, flags)) >= 0);
-  }
-
   let noResults = <div className="centerme">no results {isSearchingEverywhere ? "anywhere 🛰️" : ""}</div>;
+  if (items.length === 0) {
+    noResults = <div className="centerme">nothing here</div>;
+  }
 
   let logoThing = (
     <div className="centerme">
@@ -169,6 +170,67 @@ function PageItemList({ items, pathSep, fileDir, numFiles, pageRoot }: PageItemL
     );
   }
 
+  function doSort(oldItems: types.PageItem[]): types.PageItem[] {
+    if (sortOrder === "dirsFirst") {
+      return items;
+    }
+    if (sortCol === "filename") {
+      if (sortOrder === "asc") {
+        return [...oldItems].sort((a, b) => a[sortCol].toUpperCase().localeCompare(b[sortCol].toUpperCase()));
+      }
+      if (sortOrder === "desc") {
+        return [...oldItems].sort(
+          (a, b) => -a[sortCol].toUpperCase().localeCompare(b[sortCol].toUpperCase()),
+        );
+      }
+    } else {
+      if (sortOrder === "asc") {
+        return [...oldItems].sort((a, b) => new Date(a[sortCol]).getTime() - new Date(b[sortCol]).getTime());
+      }
+      if (sortOrder === "desc") {
+        return [...oldItems].sort((a, b) => new Date(b[sortCol]).getTime() - new Date(a[sortCol]).getTime());
+      }
+    }
+    console.error("unexpected value for orderBy", sortOrder);
+    return [];
+  }
+  function nextSortOrder(sortCol: SortCol, sortOrder: SortOrder): SortOrder {
+    if (sortCol === "filename") {
+      if (sortOrder === "dirsFirst") return "asc";
+      if (sortOrder === "asc") return "desc";
+      if (sortOrder === "desc") return "dirsFirst";
+    }
+    if (sortOrder === "dirsFirst") return "desc";
+    if (sortOrder === "desc") return "asc";
+    if (sortOrder === "asc") return "dirsFirst";
+    console.error("unexpected value for orderBy", sortOrder);
+    return "dirsFirst";
+  }
+
+  let filteredItems = doSort(items);
+  if (searchInput !== "") {
+    let flags = caseSensitive ? "" : "i";
+    filteredItems = filteredItems.filter((item) => item.filename.search(new RegExp(searchInput, flags)) >= 0);
+  }
+
+  let headers: SortCol[] = ["filename", "created", "modified", "accessed"];
+  let headerCols = headers.map((col, i) => (
+    <div
+      key={i}
+      className={"header " + col + (col === sortCol ? " " + sortOrder : "")}
+      onClick={(_) => {
+        if (col === sortCol) {
+          setSortOrder(nextSortOrder(col, sortOrder));
+        } else {
+          setSortCol(col);
+          setSortOrder(nextSortOrder(col, "dirsFirst"));
+        }
+      }}
+    >
+      {col}
+    </div>
+  ));
+
   let here = items.length;
   let inSubdirs = numFiles - here + 1; // why +1??
   let numDirs = items.filter((item) => item.kind === "Dir").length;
@@ -179,10 +241,7 @@ function PageItemList({ items, pathSep, fileDir, numFiles, pageRoot }: PageItemL
 
       <div className="header row">
         <div className="header" id="topleft"></div>
-        <div className="header filename">filename</div>
-        <div className="header created">created</div>
-        <div className="header modified">modified</div>
-        <div className="header accessed">accessed</div>
+        {headerCols}
       </div>
 
       {filteredItems.map((item) => {

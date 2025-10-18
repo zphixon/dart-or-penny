@@ -76,10 +76,16 @@ a:hover {
   border-top: 1px solid var(--border-color);
   border-bottom: 1px solid var(--border-color);
 }
-.header.mostRecentFirst::after, .header.asc::after {
+.header.desc::after {
   content: " ▾";
 }
-.header.mostRecentLast::after, .header.desc::after {
+.header.asc::after {
+  content: " ▴";
+}
+.filename.asc::after {
+  content: " ▾";
+}
+.filename.desc::after {
   content: " ▴";
 }
 
