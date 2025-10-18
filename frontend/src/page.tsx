@@ -40,13 +40,7 @@ interface PageItemListProps {
   numFiles: number;
   pageRoot: string;
 }
-function PageItemList({
-  items,
-  pathSep,
-  fileDir,
-  numFiles,
-  pageRoot,
-}: PageItemListProps) {
+function PageItemList({ items, pathSep, fileDir, numFiles, pageRoot }: PageItemListProps) {
   let [isSearchingEverywhere, setIsSearchingEverywhere] = useState(false);
   let [searchResults, setSearchResults] = useState<string[]>([]);
   let [caseSensitive, setCaseSensitive] = useState(false);
@@ -92,10 +86,7 @@ function PageItemList({
           }
         }}
         onKeyDown={(e) => {
-          if (
-            ((!isSearchingEverywhere && e.shiftKey) || isSearchingEverywhere) &&
-            e.key === "Enter"
-          ) {
+          if (((!isSearchingEverywhere && e.shiftKey) || isSearchingEverywhere) && e.key === "Enter") {
             setIsSearchingEverywhere(true);
             doSearchEverywhere();
           }
@@ -124,9 +115,7 @@ function PageItemList({
           doSearchEverywhere();
         }}
       >
-        {isSearchingEverywhere
-          ? "🛰️ searching everywhere"
-          : "search everywhere"}
+        {isSearchingEverywhere ? "🛰️ searching everywhere" : "search everywhere"}
       </button>
     </div>
   );
@@ -134,23 +123,14 @@ function PageItemList({
   let filteredItems = items;
   if (searchInput !== "") {
     let flags = caseSensitive ? "" : "i";
-    filteredItems = items.filter(
-      (item) => item.filename.search(new RegExp(searchInput, flags)) >= 0
-    );
+    filteredItems = items.filter((item) => item.filename.search(new RegExp(searchInput, flags)) >= 0);
   }
 
-  let noResults = (
-    <div className="centerme">
-      no results {isSearchingEverywhere ? "anywhere 🛰️" : ""}
-    </div>
-  );
+  let noResults = <div className="centerme">no results {isSearchingEverywhere ? "anywhere 🛰️" : ""}</div>;
 
   let logoThing = (
     <div className="centerme">
-      <img
-        id="logoThing"
-        src={pageRoot + "/.dop/assets/apple-touch-icon.png"}
-      />
+      <img id="logoThing" src={pageRoot + "/.dop/assets/apple-touch-icon.png"} />
     </div>
   );
 
@@ -158,7 +138,9 @@ function PageItemList({
     return (
       <>
         {searchWidget}
+
         {searchResults.length === 0 ? noResults : ""}
+
         {searchResults.map((result, i) => {
           let parts = result.split(pathSep);
 
@@ -181,6 +163,7 @@ function PageItemList({
             </div>
           );
         })}
+
         {logoThing}
       </>
     );
@@ -193,6 +176,7 @@ function PageItemList({
   return (
     <>
       {searchWidget}
+
       <div className="header row">
         <div className="header" id="topleft"></div>
         <div className="header filename">filename</div>
@@ -200,23 +184,25 @@ function PageItemList({
         <div className="header modified">modified</div>
         <div className="header accessed">accessed</div>
       </div>
+
       {filteredItems.map((item) => {
         return <PageItemListRow key={item.basename} item={item} />;
       })}
+
       <div id="numfiles">
         {searchInput !== "" ? <>{filteredItems.length} of</> : ""}
         {here}
         {numDirs !== 0 ? <>/ {inSubdirs} </> : ""}
       </div>
+
       {filteredItems.length === 0 ? noResults : ""}
+
       {logoThing}
     </>
   );
 }
 
-let items: types.PageItem[] = JSON.parse(
-  document.getElementById("items")!.innerText
-);
+let items: types.PageItem[] = JSON.parse(document.getElementById("items")!.innerText);
 let pathSep = document.getElementById("pathSep")!.innerText;
 let fileDir = document.getElementById("fileDir")!.innerText;
 let numFiles = parseInt(document.getElementById("numFiles")!.innerText);
@@ -224,11 +210,5 @@ let pageRoot = document.getElementById("pageRoot")!.innerText;
 
 let root = document.getElementById("reactRoot")!;
 createRoot(root).render(
-  <PageItemList
-    items={items}
-    pathSep={pathSep}
-    fileDir={fileDir}
-    numFiles={numFiles}
-    pageRoot={pageRoot}
-  />
+  <PageItemList items={items} pathSep={pathSep} fileDir={fileDir} numFiles={numFiles} pageRoot={pageRoot} />,
 );
