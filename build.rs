@@ -33,12 +33,47 @@ fn main() -> Result<(), ()> {
         println!("cargo::rerun-if-changed={}", ts.display());
     }
 
-    let output = Command::new("cmd")
-        .arg("/c")
-        .arg(".\\node_modules\\.bin\\rollup.cmd -c")
-        .current_dir(frontend_dir)
-        .output()
-        .expect("command");
+    if !frontend_dir.join("node_modules").is_dir() {
+        let mut command = if cfg!(target_os = "windows") {
+            Command::new("cmd")
+        } else {
+            Command::new("npm")
+        };
+        command.current_dir(&frontend_dir);
+        if cfg!(target_os = "windows") {
+            command.arg("/c").arg("npm ci");
+        } else {
+            command.arg("ci");
+        }
+        let output = command.output().expect("npm ci");
+        if !output.status.success() {
+            eprintln!(
+                "stdout: {}",
+                std::str::from_utf8(&output.stdout).expect("stdout")
+            );
+            eprintln!(
+                "stderr: {}",
+                std::str::from_utf8(&output.stderr).expect("stderr")
+            );
+            return Err(());
+        }
+    }
+
+    // uhh
+    let mut command = if cfg!(target_os = "windows") {
+        Command::new("cmd")
+    } else {
+        Command::new("./node_modules/.bin/rollup")
+    };
+    command.current_dir(frontend_dir);
+    if cfg!(target_os = "windows") {
+        command
+            .arg("/c")
+            .arg(".\\node_modules\\.bin\\rollup.cmd -c");
+    } else {
+        command.arg("-c");
+    }
+    let output = command.output().expect("rollup");
 
     if !output.status.success() {
         eprintln!(
