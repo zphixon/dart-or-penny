@@ -11,10 +11,11 @@
     <title>{{ tab_title }}</title>
     <style>
       :root {
-        --bg-color: rgb(255, 249, 242);
+        --bg-color: rgb(250, 255, 242);
         --border-color: rgb(30, 48, 21);
         --text-color: rgb(34, 55, 14);
         --link-color: rgb(30, 103, 8);
+        --header-color: rgb(232, 249, 208);
       }
 
       body {
@@ -41,29 +42,13 @@
         grid-template-columns: 1fr;
       }
 
-      .header {
-        user-select: none;
-      }
-      .header > :not(:first-child) {
-        border-top: 1px solid var(--border-color);
-      }
-      .header.topleft {
-        border: none;
-      }
-      .header.mostRecentFirst::after, .header.asc::after {
-        content: " ▾";
-      }
-      .header.mostRecentLast::after, .header.desc::after {
-        content: " ▴";
-      }
-
       .row {
         display: grid;
         grid-template-columns: 3em 3fr repeat(3, minmax(12em, 1fr));
         border-bottom: 1px solid var(--border-color);
         border-right: 1px solid var(--border-color);
       }
-      .row > div {
+      .row > div:not(#topleft) {
         padding: 0.25em;
         border-left: 1px solid var(--border-color);
       }
@@ -71,6 +56,24 @@
         word-break: break-all;
       }
 
+      .row.header {
+        user-select: none;
+        border-bottom: none;
+      }
+      .header > :not(:first-child) {
+        background-color: var(--header-color);
+        border-top: 1px solid var(--border-color);
+        border-bottom: 1px solid var(--border-color);
+      }
+      #topleft {
+        border-bottom: 1px solid var(--border-color);
+      }
+      .header.mostRecentFirst::after, .header.asc::after {
+        content: " ▾";
+      }
+      .header.mostRecentLast::after, .header.desc::after {
+        content: " ▴";
+      }
 
       .icon {
         display: flex;
@@ -146,7 +149,7 @@
 
     <div class="filetable">
       <div class="header row">
-        <div class="header topleft"></div>
+        <div class="header" id="topleft"></div>
         <div class="header filename">filename</div>
         <div class="header created">created</div>
         <div class="header modified">modified</div>
@@ -219,20 +222,31 @@
       }
 
       function filterList(filterQuery) {
+        let anyMatched = false;
         let rows = document.querySelectorAll(".row:not(.header)");
+
         for (let row of rows) {
           let filename = row.querySelector(".filename");
           if (filename == null) {
             continue;
           }
+
           if (matches(filename.innerText, filterQuery)) {
             // setting display to empty string resets to previous display property
             row.style.display = "";
             numfiles.style.display = "";
+            anyMatched = true;
           } else {
             row.style.display = "none";
             numfiles.style.display = "none";
           }
+        }
+
+        let topleft = document.getElementById("topleft");
+        if (anyMatched) {
+          topleft.style.borderBottom = "1px solid var(--border-color)";
+        } else {
+          topleft.style.borderBottom = "none";
         }
       }
 
