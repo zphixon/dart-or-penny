@@ -1,0 +1,133 @@
+:root {
+  --bg-color: rgb(250, 255, 242);
+  --border-color: rgb(30, 48, 21);
+  --text-color: rgb(34, 55, 14);
+  --link-color: rgb(30, 103, 8);
+  --header-color: rgb(232, 249, 208);
+}
+
+body {
+  color: var(--text-color);
+}
+a, a:visited {
+  color: var(--link-color);
+}
+a:hover {
+  background-color: var(--header-color);
+}
+
+#flexcontainer {
+  display: flex;
+  justify-content: center;
+}
+#flexinner {
+  max-width: 95em;
+  flex-basis: 100%;
+}
+
+#searchboxdiv {
+  display: flex;
+  column-gap: 0.5em;
+  padding-bottom: 1em;
+}
+#searchbox {
+  flex-grow: 1;
+}
+#caseSensitiveLabel {
+  user-select: none;
+}
+
+.filetable {
+  display: grid;
+  grid-template-columns: 1fr;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 4em 3fr repeat(3, minmax(11em, 0.6fr));
+  border-bottom: 1px solid var(--border-color);
+  border-right: 1px solid var(--border-color);
+}
+.row > div:not(#topleft) {
+  padding: 0.25em;
+  border-left: 1px solid var(--border-color);
+}
+.row > .filename {
+  word-break: break-all;
+}
+
+.filename {
+  display: flex;
+}
+.filename > a {
+  flex-basis: 100%;
+}
+
+.row.header {
+  user-select: none;
+  border-bottom: none;
+}
+.header > :not(:first-child) {
+  background-color: var(--header-color);
+  border-top: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--border-color);
+}
+#topleft.withBorder {
+  border-bottom: 1px solid var(--border-color);
+}
+.header.mostRecentFirst::after, .header.asc::after {
+  content: " ▾";
+}
+.header.mostRecentLast::after, .header.desc::after {
+  content: " ▴";
+}
+
+.icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.icon > img {
+  max-height: 3em;
+  max-width: 3em;
+}
+
+.everywheresearch {
+  padding: 0.3em;
+}
+
+#numfiles {
+  margin-left: 0.3em;
+  margin-top: 0.3em;
+}
+
+@media (max-width: 900px) {
+  .accessed {
+    display: none;
+  }
+  .row {
+    grid-template-columns: 4em 3fr repeat(2, minmax(11em, 0.6fr));
+  }
+}
+@media (max-width: 650px) {
+  .created {
+    display: none;
+  }
+  .row {
+    grid-template-columns: 4em 3fr minmax(11em, 0.6fr);
+  }
+}
+@media (max-width: 530px) {
+  #searchboxdiv {
+    flex-direction: column;
+    row-gap: 0.5em;
+  }
+  #clearSearch, #searchbox, #searchEverywhere {
+    padding: 1em;
+  }
+  #caseSensitiveLabel {
+    display: grid;
+    justify-items: end;
+    grid-template-columns: 1fr auto;
+  }
+}

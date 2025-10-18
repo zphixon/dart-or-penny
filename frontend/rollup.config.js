@@ -21,7 +21,7 @@ export default {
     ...doGlob("src/**/*.svg")
   ]),
   output: {
-    dir: "./static",
+    dir: "./build",
     format: "es",
     sourcemap: true,
   },

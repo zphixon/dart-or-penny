@@ -28,6 +28,7 @@ use thiserror::Error as ThisError;
 use tokio::{io::AsyncReadExt, net::TcpListener};
 use tower_http::compression::CompressionLayer;
 
+const SITE_WEBMANIFEST_TEMPLATE: &str = include_str!("../frontend/src/site.webmanifest.tera");
 const PAGE_TEMPLATE: &str = include_str!("../frontend/src/page.html.tera");
 
 #[derive(ThisError, Debug)]
@@ -303,7 +304,15 @@ fn build_thumbnail_db(
 
 #[derive(Serialize, ts_rs::TS)]
 #[ts(export)]
+enum PageItemKind {
+    File,
+    Dir,
+}
+
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
 struct PageItem {
+    kind: PageItemKind,
     basename: String,
     filename: String,
     created: String,
@@ -387,7 +396,7 @@ impl Database {
             )
         }
 
-        let mut serde_dirs = Vec::new();
+        let mut serde_items = Vec::new();
         for (path, basename) in dirs.into_iter() {
             let meta = tokio::fs::metadata(&path).await;
             let (created, modified, accessed) = meta
@@ -400,7 +409,8 @@ impl Database {
                 })
                 .unwrap_or_default();
 
-            serde_dirs.push(PageItem {
+            serde_items.push(PageItem {
+                kind: PageItemKind::Dir,
                 basename,
                 created,
                 modified,
@@ -414,7 +424,6 @@ impl Database {
             });
         }
 
-        let mut serde_files = Vec::new();
         for (path, basename) in files.into_iter() {
             let meta = tokio::fs::metadata(&path).await;
             let (created, modified, accessed) = meta
@@ -456,7 +465,8 @@ impl Database {
                 .map(|data| base64::engine::general_purpose::STANDARD.encode(data))
                 .next();
 
-            serde_files.push(PageItem {
+            serde_items.push(PageItem {
+                kind: PageItemKind::File,
                 basename,
                 created,
                 modified,
@@ -470,8 +480,7 @@ impl Database {
             });
         }
 
-        context.insert("dirs", &serde_dirs);
-        context.insert("files", &serde_files);
+        context.insert("items", &serde_items);
 
         if serve_dir == config.file_dir {
             context.insert(
@@ -501,7 +510,7 @@ impl Database {
         );
         context.insert(
             "file_dir",
-            &config.file_dir.display().to_string().replace("\\", "\\\\"),
+            &config.file_dir.display().to_string(),
         );
         Ok(context)
     }
@@ -723,12 +732,12 @@ async fn run() -> Result<(), Error> {
 
     let page_root = state.config.page_root.clone().unwrap_or(String::new());
     let search_endpoint = page_root.clone() + "/.dop/search";
-    let pwa_endpoint = page_root.clone() + "/.dop/pwa/{item}";
+    let assets_endpoint = page_root.clone() + "/.dop/assets/{item}";
 
     let app = Router::new()
         .fallback(file_handler)
         .route(&search_endpoint, axum::routing::get(search_handler))
-        .route(&pwa_endpoint, axum::routing::get(pwa_handler))
+        .route(&assets_endpoint, axum::routing::get(assets_handler))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             basic_auth_layer,
@@ -774,56 +783,50 @@ async fn basic_auth_layer(
     }
 }
 
-const SITE_WEBMANIFEST_TEMPLATE: &str = include_str!("../frontend/src/site.webmanifest.tera");
-const APPLE_TOUCH_ICON_PNG: &[u8] = include_bytes!("../frontend/assets/apple-touch-icon.png");
-const FAVICON_96X96_PNG: &[u8] = include_bytes!("../frontend/assets/favicon-96x96.png");
-const FAVICON_ICO: &[u8] = include_bytes!("../frontend/assets/favicon.ico");
-const FAVICON_SVG: &[u8] = include_bytes!("../frontend/assets/favicon.svg");
-const WEB_APP_MANIFEST_192X192_PNG: &[u8] =
-    include_bytes!("../frontend/assets/web-app-manifest-192x192.png");
-const WEB_APP_MANIFEST_512X512_PNG: &[u8] =
-    include_bytes!("../frontend/assets/web-app-manifest-512x512.png");
-
-async fn pwa_handler(
+async fn assets_handler(
     State(state): State<AppState>,
     axum::extract::Path(item): axum::extract::Path<String>,
 ) -> Response {
-    match item.as_str() {
-        "site.webmanifest" => {
-            let mut context = tera::Context::new();
-            context.insert("page_root", &state.config.page_root);
-            context.insert("shortcuts", &state.config.shortcut);
+    let item = item.as_str();
+    if item == "site.webmanifest" {
+        let mut context = tera::Context::new();
+        context.insert("page_root", &state.config.page_root);
+        context.insert("shortcuts", &state.config.shortcut);
 
-            let Ok(manifest) = state.tera.render("webmanifest", &context) else {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "couldn't render web manifest template",
-                )
-                    .into_response();
-            };
+        let Ok(manifest) = state.tera.render("webmanifest", &context) else {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "couldn't render web manifest template",
+            )
+                .into_response();
+        };
 
-            return ([("Content-Type", "application/manifest+json")], manifest).into_response();
-        }
-
-        "apple-touch-icon.png" => {
-            ([("Content-Type", "image/png")], APPLE_TOUCH_ICON_PNG).into_response()
-        }
-        "favicon-96x96.png" => ([("Content-Type", "image/png")], FAVICON_96X96_PNG).into_response(),
-        "favicon.ico" => ([("Content-Type", "image/x-icon")], FAVICON_ICO).into_response(),
-        "favicon.svg" => ([("Content-Type", "image/svg+xml")], FAVICON_SVG).into_response(),
-        "web-app-manifest-192x192.png" => (
-            [("Content-Type", "image/png")],
-            WEB_APP_MANIFEST_192X192_PNG,
-        )
-            .into_response(),
-        "web-app-manifest-512x512.png" => (
-            [("Content-Type", "image/png")],
-            WEB_APP_MANIFEST_512X512_PNG,
-        )
-            .into_response(),
-
-        _ => "".into_response(),
+        return ([("Content-Type", "application/manifest+json")], manifest).into_response();
     }
+
+    macro_rules! static_response {
+        ($name:literal => $content_type:literal $file:literal) => {
+            if item == $name {
+                return ([("Content-Type", $content_type)], include_bytes!($file)).into_response();
+            }
+        };
+    }
+
+    static_response!("page.js" => "text/javascript" "../frontend/build/page.js");
+    static_response!("page.css" => "text/css" "../frontend/src/page.css");
+    static_response!("apple-touch-icon.png" => "image/png" "../frontend/assets/apple-touch-icon.png");
+    static_response!("favicon-96x96.png" => "image/png" "../frontend/assets/favicon-96x96.png");
+    static_response!("favicon.ico" => "image/x-icon" "../frontend/assets/favicon.ico");
+    static_response!("favicon.svg" => "image/svg+xml" "../frontend/assets/favicon.svg");
+    static_response!("web-app-manifest-192x192.png" => "image/png" "../frontend/assets/web-app-manifest-192x192.png");
+    static_response!("web-app-manifest-512x512.png" => "image/png" "../frontend/assets/web-app-manifest-512x512.png");
+
+    #[cfg(debug_assertions)]
+    {
+        static_response!("page.js.map" => "text/javascript" "../frontend/build/page.js.map")
+    }
+
+    StatusCode::NOT_FOUND.into_response()
 }
 
 #[derive(Deserialize, Debug)]
