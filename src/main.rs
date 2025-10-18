@@ -28,7 +28,7 @@ use thiserror::Error as ThisError;
 use tokio::{io::AsyncReadExt, net::TcpListener};
 use tower_http::compression::CompressionLayer;
 
-const PAGE_TEMPLATE: &str = include_str!("./page.html.tera");
+const PAGE_TEMPLATE: &str = include_str!("../frontend/src/page.html.tera");
 
 #[derive(ThisError, Debug)]
 enum ErrorInner {
@@ -301,6 +301,17 @@ fn build_thumbnail_db(
     Ok(db)
 }
 
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
+struct PageItem {
+    basename: String,
+    filename: String,
+    created: String,
+    modified: String,
+    accessed: String,
+    thumbnail_data: Option<String>,
+}
+
 #[derive(Debug)]
 pub struct Database {
     file_dir: PathBuf,
@@ -374,16 +385,6 @@ impl Database {
                 time.minute(),
                 if is_pm { "PM" } else { "AM" },
             )
-        }
-
-        #[derive(Serialize)]
-        struct PageItem {
-            basename: String,
-            filename: String,
-            created: String,
-            modified: String,
-            accessed: String,
-            thumbnail_data: Option<String>,
         }
 
         let mut serde_dirs = Vec::new();
@@ -773,13 +774,15 @@ async fn basic_auth_layer(
     }
 }
 
-const SITE_WEBMANIFEST_TEMPLATE: &str = include_str!("site.webmanifest.tera");
-const APPLE_TOUCH_ICON_PNG: &[u8] = include_bytes!("icons/apple-touch-icon.png");
-const FAVICON_96X96_PNG: &[u8] = include_bytes!("icons/favicon-96x96.png");
-const FAVICON_ICO: &[u8] = include_bytes!("icons/favicon.ico");
-const FAVICON_SVG: &[u8] = include_bytes!("icons/favicon.svg");
-const WEB_APP_MANIFEST_192X192_PNG: &[u8] = include_bytes!("icons/web-app-manifest-192x192.png");
-const WEB_APP_MANIFEST_512X512_PNG: &[u8] = include_bytes!("icons/web-app-manifest-512x512.png");
+const SITE_WEBMANIFEST_TEMPLATE: &str = include_str!("../frontend/src/site.webmanifest.tera");
+const APPLE_TOUCH_ICON_PNG: &[u8] = include_bytes!("../frontend/assets/apple-touch-icon.png");
+const FAVICON_96X96_PNG: &[u8] = include_bytes!("../frontend/assets/favicon-96x96.png");
+const FAVICON_ICO: &[u8] = include_bytes!("../frontend/assets/favicon.ico");
+const FAVICON_SVG: &[u8] = include_bytes!("../frontend/assets/favicon.svg");
+const WEB_APP_MANIFEST_192X192_PNG: &[u8] =
+    include_bytes!("../frontend/assets/web-app-manifest-192x192.png");
+const WEB_APP_MANIFEST_512X512_PNG: &[u8] =
+    include_bytes!("../frontend/assets/web-app-manifest-512x512.png");
 
 async fn pwa_handler(
     State(state): State<AppState>,
