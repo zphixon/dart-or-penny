@@ -493,7 +493,7 @@ impl Database {
         context.insert(
             "path_sep",
             if cfg!(target_os = "windows") {
-                "\\\\"
+                "\\"
             } else {
                 "/"
             },

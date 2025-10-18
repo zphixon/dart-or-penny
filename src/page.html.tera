@@ -18,17 +18,29 @@
       .filetable {
         display: grid;
         grid-template-columns: 1fr;
-        gap: 1px;
-        background: green;
       }
       .row {
         display: grid;
-        gap: 1px;
         grid-template-columns: 3em 3fr repeat(3, minmax(12em, 1fr));
+        border-top: 1px solid green;
+        border-right: 1px solid green;
       }
       .row > div {
-        background: white;
         padding: 0.25em;
+        border-left: 1px solid green;
+      }
+      .header.row, .header.row > div {
+        border: none;
+      }
+      .header.row > :not(:first-child) {
+        border-top: 1px solid green;
+        border-right: 1px solid green;
+      }
+      .header.row > :nth-child(2) {
+        border-left: 1px solid green;
+      }
+      .row:last-child {
+        border-bottom: 1px solid green;
       }
       .row > .filename {
         word-break: break-all;
@@ -59,26 +71,34 @@
         column-gap: 0.5em;
         padding-bottom: 1em;
       }
+      #searchbox {
+        flex-grow: 1;
+      }
+      #caseSensitiveLabel {
+        user-select: none;
+      }
       @media (max-width: 530px) {
         #searchboxdiv {
           flex-direction: column;
           row-gap: 0.5em;
         }
-      }
-      #searchbox {
-        flex-grow: 1;
+        #clearSearch, #searchbox, #searchEverywhere {
+          padding: 1em;
+        }
+        #caseSensitiveLabel {
+          display: grid;
+          justify-items: end;
+          grid-template-columns: 1fr auto;
+        }
       }
       .header {
         user-select: none;
       }
       .header.mostRecentFirst::after, .header.asc::after {
-        content: "▾";
+        content: " ▾";
       }
       .header.mostRecentLast::after, .header.desc::after {
-        content: "▴";
-      }
-      #caseSensitiveDiv {
-        white-space: nowrap;
+        content: " ▴";
       }
     </style>
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, minimal-ui">
@@ -88,27 +108,30 @@
       {% for part in page_title_parts %}
         <a href="{{ part.href }}">{{ part.path }}</a>
         {% if not loop.last %}
-          /
+          {{ path_sep }}
         {% endif %}
       {% endfor %}
     </h1>
+
     <div id="searchboxdiv">
       <button id="clearSearch">clear search</button>
       <input id="searchbox" type="text" placeholder="🔎 search"/>
-      <div id="caseSensitiveDiv">
-        <label for="caseSensitive">case sensitive?</label>
+      <label id="caseSensitiveLabel" for="caseSensitive">
+        case sensitive?
         <input id="caseSensitive" type="checkbox"/>
-      </div>
+      </label>
       <button id="searchEverywhere">search everywhere</button>
     </div>
+
     <div class="filetable">
       <div class="header row">
-        <div class="header numfiles">{{ num_files }}</div>
+        <div class="header topleft"></div>
         <div class="header filename">filename</div>
         <div class="header created">created</div>
         <div class="header modified">modified</div>
         <div class="header accessed">accessed</div>
       </div>
+
       {%- set_global last_dir = 0 -%}
       {% for dir in dirs %}
         {%- set_global last_dir = loop.index -%}
@@ -122,6 +145,7 @@
           <div class="dir accessed">{{ dir.accessed }}</div>
         </div>
       {% endfor %}
+
       {% for file in files %}
         <div class="file row" data-key="{{ last_dir + loop.index }}">
           <div class="file icon">
@@ -140,7 +164,21 @@
         </div>
       {% endfor %}
     </div>
+
+    <div>
+      {% set here = dirs | concat(with=files) | length %}
+      {% set in_subdirs = num_files - here + 1 %} {# why +1?? #}
+      <span class="number">{{ here }}</span>
+      {% if dirs | length != 0 -%}
+        / <span class="number">{{ in_subdirs }}</span>
+      {%- endif %}
+    </div>
+
     <script type="text/javascript">
+      for (let numfiles of document.querySelectorAll(".number")) {
+        numfiles.innerText = new Intl.NumberFormat().format(parseInt(numfiles.innerText));
+      }
+
       let searchbox = document.getElementById("searchbox");
       let searchEverywhere = document.getElementById("searchEverywhere");
       let clearSearch = document.getElementById("clearSearch");

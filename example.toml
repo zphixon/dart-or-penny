@@ -1,7 +1,7 @@
 bind = '0.0.0.0:8888'
 page_root = '/files'
 thumbnail_dir = 'eg/.dop'
-file_dir = 'C:/Users/Zack/Pictures'
+file_dir = 'C:/Users/Zack/sync'
 thumbnail_size = 75
 
 # shortcuts relative to page_root
