@@ -508,10 +508,7 @@ impl Database {
                 "/"
             },
         );
-        context.insert(
-            "file_dir",
-            &config.file_dir.display().to_string(),
-        );
+        context.insert("file_dir", &config.file_dir.display().to_string());
         Ok(context)
     }
 
@@ -804,26 +801,33 @@ async fn assets_handler(
         return ([("Content-Type", "application/manifest+json")], manifest).into_response();
     }
 
-    macro_rules! static_response {
+    macro_rules! response {
         ($name:literal => $content_type:literal $file:literal) => {
             if item == $name {
-                return ([("Content-Type", $content_type)], include_bytes!($file)).into_response();
+                return (
+                    [
+                        ("Content-Type", $content_type),
+                        ("Cache-Control", CACHE_POLICY),
+                    ],
+                    include_bytes!($file),
+                )
+                    .into_response();
             }
         };
     }
 
-    static_response!("page.js" => "text/javascript" "../frontend/build/page.js");
-    static_response!("page.css" => "text/css" "../frontend/src/page.css");
-    static_response!("apple-touch-icon.png" => "image/png" "../frontend/assets/apple-touch-icon.png");
-    static_response!("favicon-96x96.png" => "image/png" "../frontend/assets/favicon-96x96.png");
-    static_response!("favicon.ico" => "image/x-icon" "../frontend/assets/favicon.ico");
-    static_response!("favicon.svg" => "image/svg+xml" "../frontend/assets/favicon.svg");
-    static_response!("web-app-manifest-192x192.png" => "image/png" "../frontend/assets/web-app-manifest-192x192.png");
-    static_response!("web-app-manifest-512x512.png" => "image/png" "../frontend/assets/web-app-manifest-512x512.png");
+    response!("page.js" => "text/javascript" "../frontend/build/page.js");
+    response!("page.css" => "text/css" "../frontend/src/page.css");
+    response!("apple-touch-icon.png" => "image/png" "../frontend/assets/apple-touch-icon.png");
+    response!("favicon-96x96.png" => "image/png" "../frontend/assets/favicon-96x96.png");
+    response!("favicon.ico" => "image/x-icon" "../frontend/assets/favicon.ico");
+    response!("favicon.svg" => "image/svg+xml" "../frontend/assets/favicon.svg");
+    response!("web-app-manifest-192x192.png" => "image/png" "../frontend/assets/web-app-manifest-192x192.png");
+    response!("web-app-manifest-512x512.png" => "image/png" "../frontend/assets/web-app-manifest-512x512.png");
 
     #[cfg(debug_assertions)]
     {
-        static_response!("page.js.map" => "text/javascript" "../frontend/build/page.js.map")
+        response!("page.js.map" => "text/javascript" "../frontend/build/page.js.map")
     }
 
     StatusCode::NOT_FOUND.into_response()
@@ -854,7 +858,7 @@ async fn search_handler(
     )
 }
 
-const DIR_PAGE_CACHE_POLICY: &str = "private, max-age=3600, must-revalidate";
+const CACHE_POLICY: &str = "private, max-age=3600, must-revalidate";
 
 async fn file_handler(State(state): State<AppState>, uri: Uri) -> Response {
     tracing::trace!("path: {:?}", uri.path());
@@ -954,9 +958,7 @@ async fn file_handler(State(state): State<AppState>, uri: Uri) -> Response {
             context.insert("page_root", state.config.page_root.as_deref().unwrap_or(""));
 
             match state.tera.render("page", &context) {
-                Ok(page) => {
-                    ([("Cache-Control", DIR_PAGE_CACHE_POLICY)], Html(page)).into_response()
-                }
+                Ok(page) => ([("Cache-Control", CACHE_POLICY)], Html(page)).into_response(),
                 Err(err) => (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("frigk: {:?}", err.source()),

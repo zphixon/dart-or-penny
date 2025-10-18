@@ -1,6 +1,6 @@
 import { createRoot } from "react-dom/client";
 import * as types from "./bindings/index";
-import { useCallback, useEffect, useEffectEvent, useState } from "react";
+import { useCallback, useState } from "react";
 
 interface PageItemListRowProps {
   item: types.PageItem;
@@ -139,13 +139,26 @@ function PageItemList({
     );
   }
 
-  let topleftClassName =
-    filteredItems.length > 0 ? "header withBorder" : "header";
+  let noResults = (
+    <div className="centerme">
+      no results {isSearchingEverywhere ? "anywhere 🛰️" : ""}
+    </div>
+  );
+
+  let logoThing = (
+    <div className="centerme">
+      <img
+        id="logoThing"
+        src={pageRoot + "/.dop/assets/apple-touch-icon.png"}
+      />
+    </div>
+  );
 
   if (isSearchingEverywhere) {
     return (
       <>
         {searchWidget}
+        {searchResults.length === 0 ? noResults : ""}
         {searchResults.map((result, i) => {
           let parts = result.split(pathSep);
 
@@ -168,6 +181,7 @@ function PageItemList({
             </div>
           );
         })}
+        {logoThing}
       </>
     );
   }
@@ -180,7 +194,7 @@ function PageItemList({
     <>
       {searchWidget}
       <div className="header row">
-        <div className={topleftClassName} id="topleft"></div>
+        <div className="header" id="topleft"></div>
         <div className="header filename">filename</div>
         <div className="header created">created</div>
         <div className="header modified">modified</div>
@@ -194,6 +208,8 @@ function PageItemList({
         {here}
         {numDirs !== 0 ? <>/ {inSubdirs} </> : ""}
       </div>
+      {filteredItems.length === 0 ? noResults : ""}
+      {logoThing}
     </>
   );
 }

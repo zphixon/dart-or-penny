@@ -37,6 +37,10 @@ a:hover {
   user-select: none;
 }
 
+#logoThing {
+  opacity: 50%;
+}
+
 .filetable {
   display: grid;
   grid-template-columns: 1fr;
@@ -48,7 +52,7 @@ a:hover {
   border-bottom: 1px solid var(--border-color);
   border-right: 1px solid var(--border-color);
 }
-.row > div:not(#topleft) {
+.row > div {
   padding: 0.25em;
   border-left: 1px solid var(--border-color);
 }
@@ -67,12 +71,9 @@ a:hover {
   user-select: none;
   border-bottom: none;
 }
-.header > :not(:first-child) {
+.header > div {
   background-color: var(--header-color);
   border-top: 1px solid var(--border-color);
-  border-bottom: 1px solid var(--border-color);
-}
-#topleft.withBorder {
   border-bottom: 1px solid var(--border-color);
 }
 .header.mostRecentFirst::after, .header.asc::after {
@@ -97,8 +98,14 @@ a:hover {
 }
 
 #numfiles {
-  margin-left: 0.3em;
+  display: flex;
+  justify-content: end;
   margin-top: 0.3em;
+}
+
+.centerme {
+  display: flex;
+  justify-content: center;
 }
 
 @media (max-width: 900px) {
