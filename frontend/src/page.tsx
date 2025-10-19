@@ -232,7 +232,7 @@ function PageItemList({ items, pathSep, fileDir, numFiles, pageRoot }: PageItemL
   ));
 
   let here = items.length;
-  let inSubdirs = numFiles - here + 1; // why +1??
+  let inSubdirs = numFiles - here;
   let numDirs = items.filter((item) => item.kind === "Dir").length;
 
   return (
