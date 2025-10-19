@@ -22,9 +22,10 @@ use std::{
     fmt::Display,
     fs::Metadata,
     net::SocketAddr,
+    num::NonZeroU64,
     ops::Deref,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
 use tera::{Context as TeraContext, Tera};
@@ -41,12 +42,8 @@ enum ErrorInner {
     StripPrefix(#[from] std::path::StripPrefixError),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("Thumbnail dir must be dir")]
-    ThumbnailDirNotDir,
     #[error("File dir must be dir")]
     FileDirNotDir,
-    #[error("Cannot serve from system root directory")]
-    CannotServeFromRoot,
     #[error("Image conversion error: {0}")]
     Image(#[from] image::error::ImageError),
     #[error("Config error: {0:?}")]
@@ -153,9 +150,7 @@ impl IntoResponse for Error {
                 Error::Root(error_inner) => match error_inner {
                     ErrorInner::StripPrefix(_)
                     | ErrorInner::Io(_)
-                    | ErrorInner::ThumbnailDirNotDir
                     | ErrorInner::FileDirNotDir
-                    | ErrorInner::CannotServeFromRoot
                     | ErrorInner::Image(_)
                     | ErrorInner::Config(_)
                     | ErrorInner::NumberParse(_)
@@ -409,11 +404,11 @@ pub struct Config {
     #[serde(default)]
     shortcut: Vec<Shortcut>,
     #[serde(default = "min_scan_interval_secs")]
-    min_scan_interval: u64,
+    min_scan_interval: NonZeroU64,
 }
 
-fn min_scan_interval_secs() -> u64 {
-    60
+fn min_scan_interval_secs() -> NonZeroU64 {
+    NonZeroU64::new(60).unwrap()
 }
 
 fn default_bind() -> SocketAddr {
@@ -454,6 +449,7 @@ struct MyFile2 {
 }
 
 struct AppState2 {
+    rebuild_thumbnails: AtomicBool,
     thumbnail_name_data: Cache<String, String>,
     thumbnail_broken: DashSet<String>,
     files: DashMap<String, MyFile2>,
@@ -495,6 +491,7 @@ async fn run() -> Result<(), Error> {
         .unwrap();
 
     let state = Arc::new(AppState2 {
+        rebuild_thumbnails: AtomicBool::new(args.rebuild_thumbnails),
         thumbnail_name_data: Cache::new(8192),
         thumbnail_broken: DashSet::new(),
         files: DashMap::new(),
@@ -595,7 +592,27 @@ fn calculate_subdirs(state: Arc<AppState2>, part_name: &String) {
     }
 }
 
-async fn index_and_thumbnail(state: Arc<AppState2>, dir: &Path) -> Result<(), Error> {
+fn clear_removed(state: Arc<AppState2>, removed: &mut HashSet<String>) {
+    tracing::debug!("removing {:#?}", removed);
+    while !removed.is_empty() {
+        let Some(item_key) = removed.iter().next() else {
+            break;
+        };
+        tracing::debug!("removing {}", item_key);
+        let Some((key, item)) = state.files.remove(item_key) else {
+            continue;
+        };
+        removed.remove(&key);
+        for child_item in item.child_items {
+            removed.insert(child_item);
+        }
+    }
+}
+
+async fn index_thumbnail_find_removed(
+    state: Arc<AppState2>,
+    dir: &Path,
+) -> Result<HashSet<String>, Error> {
     let part_dir = if dir != state.config.file_dir {
         dir.strip_prefix(&state.config.file_dir)
             .with_context(|| format!("strip prefix {}", dir.display()))?
@@ -609,6 +626,8 @@ async fn index_and_thumbnail(state: Arc<AppState2>, dir: &Path) -> Result<(), Er
     let mut read_dir = tokio::fs::read_dir(dir)
         .await
         .with_context(|| format!("read_dir {}", dir.display()))?;
+
+    let mut removed = HashSet::new();
 
     while let Some(entry) = read_dir
         .next_entry()
@@ -648,14 +667,16 @@ async fn index_and_thumbnail(state: Arc<AppState2>, dir: &Path) -> Result<(), Er
         }
 
         let thumbnail_name = if let Some(ext) = entry_path.extension()
+            && !state.thumbnail_broken.contains(&part_name)
             && THUMBNAILABLE_EXTENSIONS.contains(&ext.to_string_lossy().to_lowercase().as_str())
         {
             let thumbnail_name = thumbnail_filename(&canon_entry_path);
             let thumbnail_path = state.config.thumbnail_dir.join(&thumbnail_name);
-            if matches!(tokio::fs::try_exists(&thumbnail_path).await, Ok(true)) {
-                // && !state.config.rebuild_thumbnails
-                Some(thumbnail_name)
-            } else {
+            if !matches!(tokio::fs::try_exists(&thumbnail_path).await, Ok(true))
+                || state
+                    .rebuild_thumbnails
+                    .load(std::sync::atomic::Ordering::SeqCst)
+            {
                 if let Err(e) = write_thumbnail(&entry_path, &thumbnail_path, &state.config).await {
                     tracing::warn!(
                         "couldn't create thumbnail for {}: {}",
@@ -667,12 +688,14 @@ async fn index_and_thumbnail(state: Arc<AppState2>, dir: &Path) -> Result<(), Er
                 } else {
                     Some(thumbnail_name)
                 }
+            } else {
+                Some(thumbnail_name)
             }
         } else {
             None
         };
 
-        state.files.insert(
+        let old = state.files.insert(
             part_name.clone(),
             MyFile2 {
                 full_path: canon_entry_path,
@@ -684,13 +707,18 @@ async fn index_and_thumbnail(state: Arc<AppState2>, dir: &Path) -> Result<(), Er
         );
 
         if is_dir {
-            Box::pin(index_and_thumbnail(state.clone(), &entry_path)).await?;
+            Box::pin(index_thumbnail_find_removed(state.clone(), &entry_path)).await?;
         }
+
+        if let Some(old) = old {
+            let new = state.files.get(&part_name).expect("inserted file");
+            removed.extend(old.child_items.difference(&new.child_items).cloned());
+        };
 
         calculate_subdirs(state.clone(), &part_name);
     }
 
-    Ok(())
+    Ok(removed)
 }
 
 async fn indexer(state: Arc<AppState2>) -> Result<(), Error> {
@@ -717,16 +745,31 @@ async fn indexer(state: Arc<AppState2>) -> Result<(), Error> {
             )
         })?;
 
-    let mut period = Duration::from_secs(state.config.min_scan_interval);
+    let mut period = Duration::from_secs(state.config.min_scan_interval.into());
     let mut interval = tokio::time::interval(period);
     let mut prev = interval.tick().await; // first tick returns immediately
     loop {
         tracing::debug!("walking");
-        index_and_thumbnail(state.clone(), &state.config.file_dir).await?;
+
+        let mut removed =
+            index_thumbnail_find_removed(state.clone(), &state.config.file_dir).await?;
         calculate_subdirs(state.clone(), &file_dir_part_name);
+        clear_removed(state.clone(), &mut removed);
+
+        state
+            .rebuild_thumbnails
+            .fetch_and(false, std::sync::atomic::Ordering::SeqCst);
+
         let next = interval.tick().await;
-        if next - prev > period {
-            period += Duration::from_secs(state.config.min_scan_interval);
+        let dt = next - prev;
+        if dt > period {
+            tracing::warn!(
+                "scan took {}s, longer than configured {}s. increasing by {}s",
+                dt.as_secs(),
+                period.as_secs(),
+                state.config.min_scan_interval,
+            );
+            period += Duration::from_secs(state.config.min_scan_interval.into());
             interval = tokio::time::interval(period);
         }
         prev = next;
@@ -842,7 +885,18 @@ async fn search_handler(
 const CACHE_POLICY: &str = "private, max-age=3600, must-revalidate";
 
 async fn file_handler(State(state): State<Arc<AppState2>>, uri: Uri) -> Response {
-    let not_found = (StatusCode::NOT_FOUND, format!("Not found: {}", uri.path())).into_response();
+    let not_found = (
+        StatusCode::NOT_FOUND,
+        Html(format!(
+            r#"<!DOCTYPE html>
+            <html><head>
+            <meta name="viewport" content="width=device-width, initial-scale=1, minimal-ui">
+            <body><a href="{}">↖ Home</a> - Not found: {}"#,
+            state.config.page_root,
+            uri.path()
+        )),
+    )
+        .into_response();
 
     if !uri.path().starts_with(&state.config.page_root) {
         tracing::trace!("not in page root");
