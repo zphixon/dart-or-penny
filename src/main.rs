@@ -22,7 +22,6 @@ use std::{
     fmt::Display,
     fs::Metadata,
     net::SocketAddr,
-    num::NonZeroU64,
     ops::Deref,
     path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicBool},
@@ -195,7 +194,7 @@ async fn indexer(state: Arc<AppState2>) -> Result<(), Error> {
             )
         })?;
 
-    let mut period = Duration::from_secs(state.config.min_scan_interval.into());
+    let mut period = state.config.scan_interval.into();
     let mut interval = tokio::time::interval(period);
     let mut prev = interval.tick().await; // first tick returns immediately
     loop {
@@ -217,9 +216,9 @@ async fn indexer(state: Arc<AppState2>) -> Result<(), Error> {
                 "scan took {}s, longer than configured {}s. increasing by {}s",
                 dt.as_secs(),
                 period.as_secs(),
-                state.config.min_scan_interval,
+                state.config.scan_interval.as_secs(),
             );
-            period += Duration::from_secs(state.config.min_scan_interval.into());
+            period += state.config.scan_interval;
             interval = tokio::time::interval(period);
         }
         prev = next;
@@ -436,12 +435,36 @@ pub struct Config {
     basic_auth: Option<BasicAuthConfig>,
     #[serde(default)]
     shortcut: Vec<Shortcut>,
-    #[serde(default = "min_scan_interval_secs")]
-    min_scan_interval: NonZeroU64,
+    #[serde(
+        default = "scan_interval",
+        deserialize_with = "de_scan_interval"
+    )]
+    scan_interval: Duration,
 }
 
-fn min_scan_interval_secs() -> NonZeroU64 {
-    NonZeroU64::new(60).unwrap()
+fn scan_interval() -> Duration {
+    Duration::from_secs(120)
+}
+
+fn de_scan_interval<'de, D: serde::de::Deserializer<'de>>(de: D) -> Result<Duration, D::Error> {
+    struct V;
+
+    impl<'de> serde::de::Visitor<'de> for V {
+        type Value = Duration;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            write!(formatter, "string")
+        }
+
+        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            humantime::parse_duration(v).map_err(E::custom)
+        }
+    }
+
+    de.deserialize_str(V)
 }
 
 fn default_bind() -> SocketAddr {
