@@ -351,15 +351,11 @@ async fn get_context(state: Arc<AppState2>, request_file: &MyFile2) -> Result<Te
 
     if request_file.full_path == state.config.file_dir {
         context.insert(
-            "num_files",
-            &state
-                .files
-                .get(&state.config.file_dir.display().to_string())
-                .expect("file dir should be in files")
-                .num_children,
+            "in_subdirs",
+            &(request_file.child_items.len() as u64 + request_file.items_in_subdirs),
         );
     } else {
-        context.insert("num_files", &request_file.num_children);
+        context.insert("in_subdirs", &request_file.items_in_subdirs);
     }
 
     context.insert(
@@ -453,7 +449,7 @@ struct MyFile2 {
     full_path: PathBuf,
     metadata: Metadata,
     thumbnail_name: Option<String>,
-    num_children: u64,
+    items_in_subdirs: u64,
     child_items: HashSet<String>,
 }
 
@@ -577,6 +573,28 @@ async fn write_thumbnail(
     Ok(())
 }
 
+fn calculate_subdirs(state: Arc<AppState2>, part_name: &String) {
+    let items_in_subdirs = {
+        let mut total = 0;
+        let my_file = state.files.get(part_name).expect("file is inserted");
+        for child in my_file.child_items.iter() {
+            let Some(my_child) = state.files.get(child) else {
+                tracing::warn!("child not inserted: {}", child);
+                continue;
+            };
+            if my_child.metadata.is_dir() {
+                total += my_child.child_items.len() as u64;
+                total += my_child.items_in_subdirs;
+            }
+        }
+        total
+    };
+    {
+        let mut my_file = state.files.get_mut(part_name).expect("file is inserted");
+        my_file.items_in_subdirs = items_in_subdirs;
+    }
+}
+
 async fn index_and_thumbnail(state: Arc<AppState2>, dir: &Path) -> Result<(), Error> {
     let part_dir = if dir != state.config.file_dir {
         dir.strip_prefix(&state.config.file_dir)
@@ -619,12 +637,6 @@ async fn index_and_thumbnail(state: Arc<AppState2>, dir: &Path) -> Result<(), Er
             .display()
             .to_string();
 
-        // hmm not quite correct?
-        if state.files.contains_key(&part_name) {
-            continue;
-        }
-
-        tracing::info!("new entry {}", entry_path.display());
         let is_dir = metadata.is_dir();
 
         {
@@ -633,7 +645,6 @@ async fn index_and_thumbnail(state: Arc<AppState2>, dir: &Path) -> Result<(), Er
                 .get_mut(&part_dir)
                 .expect("file parent should exist");
             parent.child_items.insert(part_name.clone());
-            parent.num_children += 1;
         }
 
         let thumbnail_name = if let Some(ext) = entry_path.extension()
@@ -642,6 +653,7 @@ async fn index_and_thumbnail(state: Arc<AppState2>, dir: &Path) -> Result<(), Er
             let thumbnail_name = thumbnail_filename(&canon_entry_path);
             let thumbnail_path = state.config.thumbnail_dir.join(&thumbnail_name);
             if matches!(tokio::fs::try_exists(&thumbnail_path).await, Ok(true)) {
+                // && !state.config.rebuild_thumbnails
                 Some(thumbnail_name)
             } else {
                 if let Err(e) = write_thumbnail(&entry_path, &thumbnail_path, &state.config).await {
@@ -666,7 +678,7 @@ async fn index_and_thumbnail(state: Arc<AppState2>, dir: &Path) -> Result<(), Er
                 full_path: canon_entry_path,
                 metadata,
                 thumbnail_name,
-                num_children: 0,
+                items_in_subdirs: 0,
                 child_items: HashSet::with_capacity(0),
             },
         );
@@ -675,44 +687,23 @@ async fn index_and_thumbnail(state: Arc<AppState2>, dir: &Path) -> Result<(), Er
             Box::pin(index_and_thumbnail(state.clone(), &entry_path)).await?;
         }
 
-        let my_children = {
-            state
-                .files
-                .get(&part_name)
-                .expect("file was added")
-                .num_children
-        };
-
-        {
-            let mut parent = state
-                .files
-                .get_mut(&part_dir)
-                .expect("file parent should exist");
-            parent.num_children += my_children;
-            if is_dir {
-                parent.num_children = parent.num_children.saturating_sub(1);
-            }
-        }
-
-        {
-            let mut my_item = state.files.get_mut(&part_name).expect("file was added");
-            my_item.num_children += my_item.child_items.len() as u64;
-        }
+        calculate_subdirs(state.clone(), &part_name);
     }
 
     Ok(())
 }
 
 async fn indexer(state: Arc<AppState2>) -> Result<(), Error> {
+    let file_dir_part_name = state.config.file_dir.display().to_string();
     state.files.insert(
-        state.config.file_dir.display().to_string(),
+        file_dir_part_name.clone(),
         MyFile2 {
             full_path: state.config.file_dir.clone(),
             metadata: tokio::fs::metadata(&state.config.file_dir)
                 .await
                 .expect("file dir metadata"),
             thumbnail_name: None,
-            num_children: 0,
+            items_in_subdirs: 0,
             child_items: HashSet::new(),
         },
     );
@@ -732,6 +723,7 @@ async fn indexer(state: Arc<AppState2>) -> Result<(), Error> {
     loop {
         tracing::debug!("walking");
         index_and_thumbnail(state.clone(), &state.config.file_dir).await?;
+        calculate_subdirs(state.clone(), &file_dir_part_name);
         let next = interval.tick().await;
         if next - prev > period {
             period += Duration::from_secs(state.config.min_scan_interval);

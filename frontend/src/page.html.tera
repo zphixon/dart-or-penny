@@ -28,7 +28,7 @@
     </div>
     <script type="application/json" id="items">{{ items | json_encode() }}</script>
     <script type="text/plain" id="fileDir">{{ file_dir }}</script>
-    <script type="text/plain" id="numFiles">{{ num_files }}</script>
+    <script type="text/plain" id="itemsInSubdirs">{{ in_subdirs }}</script>
     <script type="text/plain" id="pageRoot">{{ page_root }}</script>
     <script type="text/plain" id="pathSep">{{ path_sep }}</script>
     <script type="module" src="{{ page_root }}/.dop/assets/page.js"></script>

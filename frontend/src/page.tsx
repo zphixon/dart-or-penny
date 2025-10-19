@@ -40,10 +40,10 @@ interface PageItemListProps {
   items: types.PageItem[];
   pathSep: string;
   fileDir: string;
-  numFiles: number;
+  itemsInSubdirs: number;
   pageRoot: string;
 }
-function PageItemList({ items, pathSep, fileDir, numFiles, pageRoot }: PageItemListProps) {
+function PageItemList({ items, pathSep, fileDir, itemsInSubdirs, pageRoot }: PageItemListProps) {
   let [isSearchingEverywhere, setIsSearchingEverywhere] = useState(false);
   let [searchResults, setSearchResults] = useState<string[]>([]);
   let [caseSensitive, setCaseSensitive] = useState(false);
@@ -231,8 +231,6 @@ function PageItemList({ items, pathSep, fileDir, numFiles, pageRoot }: PageItemL
     </div>
   ));
 
-  let here = items.length;
-  let inSubdirs = numFiles - here;
   let numDirs = items.filter((item) => item.kind === "Dir").length;
 
   return (
@@ -250,8 +248,8 @@ function PageItemList({ items, pathSep, fileDir, numFiles, pageRoot }: PageItemL
 
       <div id="numfiles">
         {searchInput !== "" ? <>{filteredItems.length} of</> : ""}
-        {here}
-        {numDirs !== 0 ? <>/ {inSubdirs} </> : ""}
+        {items.length}
+        {numDirs !== 0 ? <>/ {itemsInSubdirs} </> : ""}
       </div>
 
       {filteredItems.length === 0 ? noResults : ""}
@@ -264,10 +262,16 @@ function PageItemList({ items, pathSep, fileDir, numFiles, pageRoot }: PageItemL
 let items: types.PageItem[] = JSON.parse(document.getElementById("items")!.innerText);
 let pathSep = document.getElementById("pathSep")!.innerText;
 let fileDir = document.getElementById("fileDir")!.innerText;
-let numFiles = parseInt(document.getElementById("numFiles")!.innerText);
+let itemsInSubdirs = parseInt(document.getElementById("itemsInSubdirs")!.innerText);
 let pageRoot = document.getElementById("pageRoot")!.innerText;
 
 let root = document.getElementById("reactRoot")!;
 createRoot(root).render(
-  <PageItemList items={items} pathSep={pathSep} fileDir={fileDir} numFiles={numFiles} pageRoot={pageRoot} />,
+  <PageItemList
+    items={items}
+    pathSep={pathSep}
+    fileDir={fileDir}
+    itemsInSubdirs={itemsInSubdirs}
+    pageRoot={pageRoot}
+  />,
 );
