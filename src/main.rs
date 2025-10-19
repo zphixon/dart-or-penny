@@ -379,14 +379,8 @@ async fn write_thumbnail(
 
 fn thumbnail_filename(of: &Path) -> String {
     let name = format!("{}", of.display());
-    let mut hasher = md5_rs::Context::new();
-    hasher.read(name.as_bytes());
-    hasher
-        .finish()
-        .into_iter()
-        .map(|byte| format!("{:02x}", byte))
-        .collect::<String>()
-        + ".webp"
+    let digest = md5::compute(name);
+    format!("{:02x}.webp", digest)
 }
 
 fn calculate_subdirs(state: Arc<AppState2>, part_name: &String) {
@@ -708,13 +702,6 @@ fn file_list_matching(state: Arc<AppState2>, include: impl Fn(&Path) -> bool) ->
 
 #[derive(Serialize, ts_rs::TS)]
 #[ts(export)]
-enum PageItemKind {
-    File,
-    Dir,
-}
-
-#[derive(Serialize, ts_rs::TS)]
-#[ts(export)]
 struct PageItem {
     kind: PageItemKind,
     basename: String,
@@ -723,6 +710,13 @@ struct PageItem {
     modified: String,
     accessed: String,
     thumbnail_data: Option<String>,
+}
+
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
+enum PageItemKind {
+    File,
+    Dir,
 }
 
 async fn file_handler(State(state): State<Arc<AppState2>>, uri: Uri) -> Response {
