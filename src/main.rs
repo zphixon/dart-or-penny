@@ -185,15 +185,6 @@ async fn indexer(state: Arc<AppState2>) -> Result<(), Error> {
         },
     );
 
-    tokio::fs::create_dir_all(&state.config.thumbnail_dir)
-        .await
-        .with_context(|| {
-            format!(
-                "creating thumbnail dir {}",
-                state.config.thumbnail_dir.display()
-            )
-        })?;
-
     let mut period = state.config.scan_interval.into();
     let mut interval = tokio::time::interval(period);
     let mut prev = interval.tick().await; // first tick returns immediately
@@ -551,6 +542,11 @@ async fn run() -> Result<(), Error> {
             .page_root
             .trim_start_matches("/")
             .trim_end_matches("/");
+
+    tokio::fs::create_dir_all(&config.thumbnail_dir)
+        .await
+        .with_context(|| format!("creating thumbnail dir {}", config.thumbnail_dir.display()))?;
+    config.thumbnail_dir = config.thumbnail_dir.canonicalize()?;
 
     let mut tera = Tera::default();
     tera.add_raw_template("page", include_str!("../frontend/src/page.html.tera"))
