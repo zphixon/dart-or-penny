@@ -266,6 +266,11 @@ async fn index_thumbnail_find_removed(
             .path()
             .canonicalize() // necessary?
             .with_context(|| format!("canonicalize {}", entry_path.display()))?;
+
+        if canon_entry_path == state.config.thumbnail_dir {
+            continue;
+        }
+
         let part_name = canon_entry_path
             .strip_prefix(&state.config.file_dir)
             .with_context(|| format!("strip prefix {}", canon_entry_path.display()))?
