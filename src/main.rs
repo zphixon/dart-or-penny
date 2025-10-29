@@ -25,6 +25,7 @@ use std::{
     fmt::Display,
     fs::Metadata,
     net::SocketAddr,
+    num::NonZero,
     ops::Deref,
     path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicBool},
@@ -437,6 +438,12 @@ pub struct Config {
     shortcut: Vec<Shortcut>,
     #[serde(default = "scan_interval", deserialize_with = "de_scan_interval")]
     scan_interval: Duration,
+    #[serde(default = "default_min_worker_threads")]
+    min_worker_threads: NonZero<usize>,
+}
+
+fn default_min_worker_threads() -> NonZero<usize> {
+    unsafe { NonZero::new_unchecked(4) }
 }
 
 fn scan_interval() -> Duration {
@@ -516,19 +523,8 @@ struct MyFile2 {
     child_items: HashSet<String>,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Error> {
-    match run().await {
-        Ok(()) => {}
-        Err(e) => println!("{}", e),
-    }
-
-    Ok(())
-}
-
-async fn run() -> Result<(), Error> {
+fn main() -> Result<(), Error> {
     tracing_subscriber::fmt::init();
-
     let args: Args = argh::from_env();
 
     let mut config: Config =
@@ -544,11 +540,23 @@ async fn run() -> Result<(), Error> {
             .trim_start_matches("/")
             .trim_end_matches("/");
 
-    tokio::fs::create_dir_all(&config.thumbnail_dir)
-        .await
+    std::fs::create_dir_all(&config.thumbnail_dir)
         .with_context(|| format!("creating thumbnail dir {}", config.thumbnail_dir.display()))?;
     config.thumbnail_dir = config.thumbnail_dir.canonicalize()?;
 
+    let mut threads = std::thread::available_parallelism().unwrap_or(default_min_worker_threads());
+    if threads < config.min_worker_threads {
+        threads = config.min_worker_threads;
+    }
+
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(threads.get())
+        .build()?
+        .block_on(async move { run(args, config).await })
+}
+
+async fn run(args: Args, config: Config) -> Result<(), Error> {
     let mut tera = Tera::default();
     tera.add_raw_template("page", include_str!("../frontend/src/page.html.tera"))
         .unwrap();
