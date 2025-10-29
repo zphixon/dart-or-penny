@@ -1,6 +1,9 @@
 use axum::{
     Json, Router,
-    extract::{Query, Request, State},
+    extract::{
+        Query, Request, State, WebSocketUpgrade,
+        ws::{self, WebSocket},
+    },
     http::{StatusCode, Uri, header},
     middleware::Next,
     response::{Html, IntoResponse, Response},
@@ -31,6 +34,7 @@ use tera::{Context as TeraContext, Tera};
 use thiserror::Error as ThisError;
 use tokio::{io::AsyncReadExt, net::TcpListener};
 use tower_http::compression::CompressionLayer;
+use tower_sessions::{Expiry, MemoryStore, Session, SessionManagerLayer};
 
 #[derive(ThisError, Debug)]
 enum ErrorInner {
@@ -440,10 +444,7 @@ pub struct Config {
     basic_auth: Option<BasicAuthConfig>,
     #[serde(default)]
     shortcut: Vec<Shortcut>,
-    #[serde(
-        default = "scan_interval",
-        deserialize_with = "de_scan_interval"
-    )]
+    #[serde(default = "scan_interval", deserialize_with = "de_scan_interval")]
     scan_interval: Duration,
 }
 
@@ -577,19 +578,25 @@ async fn run() -> Result<(), Error> {
 
     tracing::info!("starting! binding to {}", state.config.bind);
 
+    let session_store = MemoryStore::default();
+    let session_layer = SessionManagerLayer::new(session_store).with_expiry(Expiry::OnSessionEnd);
+
     let page_root = state.config.page_root.clone();
     let search_endpoint = page_root.clone() + "/.dop/search";
     let assets_endpoint = page_root.clone() + "/.dop/assets/{item}";
+    let thumbnail_endpoint = page_root.clone() + "/.dop/thumbnail";
 
     let app = Router::new()
+        .route(&assets_endpoint, axum::routing::get(assets_handler))
+        .route(&search_endpoint, axum::routing::get(search_handler))
+        .route(&thumbnail_endpoint, axum::routing::get(thumbnail_handler))
+        .fallback(file_handler)
+        .layer(CompressionLayer::new())
+        .layer(session_layer)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             basic_auth_layer,
         ))
-        .route(&assets_endpoint, axum::routing::get(assets_handler))
-        .route(&search_endpoint, axum::routing::get(search_handler))
-        .fallback(file_handler)
-        .layer(CompressionLayer::new())
         .with_state(state.clone());
 
     let listener = TcpListener::bind(state.config.bind)
@@ -632,8 +639,6 @@ async fn basic_auth_layer(
     }
 }
 
-const CACHE_POLICY: &str = "private, max-age=3600, must-revalidate";
-
 async fn assets_handler(
     State(state): State<Arc<AppState2>>,
     axum::extract::Path(item): axum::extract::Path<String>,
@@ -655,13 +660,18 @@ async fn assets_handler(
         return ([("Content-Type", "application/manifest+json")], manifest).into_response();
     }
 
+    // 1 year by default
     macro_rules! response {
         ($name:literal => $content_type:literal $file:literal) => {
+            response!($name => $content_type $file "max-age=31536000, immutable")
+        };
+
+        ($name:literal => $content_type:literal $file:literal $cache:literal) => {
             if item == $name {
                 return (
                     [
                         ("Content-Type", $content_type),
-                        ("Cache-Control", CACHE_POLICY),
+                        ("Cache-Control", $cache),
                     ],
                     include_bytes!($file),
                 )
@@ -670,8 +680,9 @@ async fn assets_handler(
         };
     }
 
-    response!("page.js" => "text/javascript" "../frontend/build/page.js");
-    response!("page.css" => "text/css" "../frontend/src/page.css");
+    response!("page.js" => "text/javascript" "../frontend/build/page.js" "max-age=3600, must-revalidate");
+    response!("page.css" => "text/css" "../frontend/src/page.css" "max-age=3600, must-revalidate");
+
     response!("apple-touch-icon.png" => "image/png" "../frontend/assets/apple-touch-icon.png");
     response!("favicon-96x96.png" => "image/png" "../frontend/assets/favicon-96x96.png");
     response!("favicon.ico" => "image/x-icon" "../frontend/assets/favicon.ico");
@@ -728,6 +739,124 @@ fn file_list_matching(state: Arc<AppState2>, include: impl Fn(&Path) -> bool) ->
     results
 }
 
+#[derive(Deserialize)]
+struct Csrf {
+    csrf: Option<String>,
+}
+
+#[derive(Serialize, ts_rs::TS)]
+#[serde(tag = "type")]
+#[ts(export)]
+struct ThumbnailData {
+    name: String,
+    data: String,
+}
+
+#[derive(Serialize, ts_rs::TS)]
+#[serde(tag = "type")]
+#[ts(export)]
+struct ThumbnailError {
+    name: String,
+    err: String,
+}
+
+async fn thumbnail_handler(
+    State(state): State<Arc<AppState2>>,
+    Query(Csrf { csrf }): Query<Csrf>,
+    upgrade: WebSocketUpgrade,
+    session: Session,
+) -> Response {
+    let session_csrf = match session.get::<Vec<u8>>("csrf").await {
+        Ok(Some(csrf)) => csrf,
+        Ok(None) => return (StatusCode::UNAUTHORIZED, "missing CSRF").into_response(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("get csrf: {}", e),
+            )
+                .into_response();
+        }
+    };
+    let session_csrf = base64::engine::general_purpose::STANDARD.encode(session_csrf);
+    if Some(session_csrf) != csrf {
+        return (StatusCode::UNAUTHORIZED, "invalid CSRF").into_response();
+    }
+
+    tracing::trace!("new customer");
+
+    upgrade.on_upgrade(|socket| thumbnail_task(state, socket))
+}
+
+async fn thumbnail_task(state: Arc<AppState2>, mut socket: WebSocket) {
+    while let Some(Ok(msg)) = socket.recv().await
+        && let Ok(msg) = msg.to_text()
+    {
+        match get_thumbnail(state.clone(), msg).await {
+            Ok(data) => {
+                let Ok(_) = socket
+                    .send(ws::Message::Text(
+                        serde_json::to_string(&data)
+                            .expect("thumbnail data to JSON")
+                            .into(),
+                    ))
+                    .await
+                else {
+                    break;
+                };
+            }
+            Err(err) => {
+                let Ok(_) = socket
+                    .send(ws::Message::Text(
+                        serde_json::to_string(&err)
+                            .expect("thumbnail error to JSON")
+                            .into(),
+                    ))
+                    .await
+                else {
+                    break;
+                };
+            }
+        }
+    }
+}
+
+async fn get_thumbnail(state: Arc<AppState2>, name: &str) -> Result<ThumbnailData, ThumbnailError> {
+    if state.thumbnail_broken.contains(name) {
+        return Err(ThumbnailError {
+            name: String::from(name),
+            err: format!("thumbnail broken"),
+        });
+    }
+
+    if let Some(data) = state.thumbnail_name_data.get(name).await {
+        return Ok(ThumbnailData {
+            name: String::from(name),
+            data,
+        });
+    };
+
+    match tokio::fs::read(state.config.thumbnail_dir.join(name)).await {
+        Ok(data) => {
+            let data = base64::engine::general_purpose::STANDARD.encode(data);
+
+            state
+                .thumbnail_name_data
+                .insert(String::from(name), data.clone())
+                .await;
+
+            Ok(ThumbnailData {
+                name: String::from(name),
+                data,
+            })
+        }
+
+        Err(e) => Err(ThumbnailError {
+            name: String::from(name),
+            err: format!("couldn't read thumbnail: {}", e),
+        }),
+    }
+}
+
 #[derive(Serialize, ts_rs::TS)]
 #[ts(export)]
 struct PageItem {
@@ -737,7 +866,7 @@ struct PageItem {
     created: String,
     modified: String,
     accessed: String,
-    thumbnail_data: Option<String>,
+    thumbnail_name: Option<String>,
 }
 
 #[derive(Serialize, ts_rs::TS)]
@@ -747,7 +876,7 @@ enum PageItemKind {
     Dir,
 }
 
-async fn file_handler(State(state): State<Arc<AppState2>>, uri: Uri) -> Response {
+async fn file_handler(State(state): State<Arc<AppState2>>, session: Session, uri: Uri) -> Response {
     let not_found = (
         StatusCode::NOT_FOUND,
         Html(format!(
@@ -790,6 +919,21 @@ async fn file_handler(State(state): State<Arc<AppState2>>, uri: Uri) -> Response
         tracing::debug!("not found, normal style: {}", request_path);
         return not_found;
     };
+
+    let csrf = if let Ok(csrf) = session.get::<Vec<u8>>("csrf").await
+        && let Some(csrf) = csrf
+    {
+        csrf
+    } else {
+        tracing::debug!("new csrf");
+        let csrf = Vec::from(rand::random::<[u8; 16]>());
+        let Ok(_) = session.insert("csrf", csrf.clone()).await else {
+            tracing::error!("couldn't insert csrf in session");
+            return not_found;
+        };
+        csrf
+    };
+    let csrf = base64::engine::general_purpose::STANDARD.encode(csrf);
 
     if request_file.metadata.is_dir() {
         if let Ok(mut context) = get_context(state.clone(), &request_file).await {
@@ -839,9 +983,14 @@ async fn file_handler(State(state): State<Arc<AppState2>>, uri: Uri) -> Response
             context.insert("tab_title", &request_file.full_path.display().to_string());
             context.insert("page_title_parts", &title_parts);
             context.insert("page_root", &state.config.page_root);
+            context.insert("csrf", &csrf);
 
             match state.tera.render("page", &context) {
-                Ok(page) => ([("Cache-Control", CACHE_POLICY)], Html(page)).into_response(),
+                Ok(page) => (
+                    [("Cache-Control", "private, max-age=3600, must-revalidate")],
+                    Html(page),
+                )
+                    .into_response(),
                 Err(err) => (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("frigk: {:?}", err.source()),
@@ -966,7 +1115,7 @@ async fn get_context(state: Arc<AppState2>, request_file: &MyFile2) -> Result<Te
                     .strip_prefix(&state.config.file_dir)?
                     .display()
             ),
-            thumbnail_data: None,
+            thumbnail_name: None,
         });
     }
 
@@ -987,28 +1136,10 @@ async fn get_context(state: Arc<AppState2>, request_file: &MyFile2) -> Result<Te
             .map(timestamp)
             .unwrap_or_default();
 
-        let thumbnail_data = if !state.thumbnail_broken.contains(child_file.key())
+        let thumbnail_name = if !state.thumbnail_broken.contains(child_file.key())
             && let Some(thumbnail_name) = child_file.thumbnail_name.as_ref()
         {
-            match state.thumbnail_name_data.get(thumbnail_name).await {
-                Some(hit) => Some(hit),
-                None => {
-                    match tokio::fs::read(state.config.thumbnail_dir.join(thumbnail_name)).await {
-                        Ok(bytes) => {
-                            let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
-                            state
-                                .thumbnail_name_data
-                                .insert(thumbnail_name.to_owned(), b64.clone())
-                                .await;
-                            Some(b64)
-                        }
-                        Err(_) => {
-                            state.thumbnail_broken.insert(child_file.key().to_owned());
-                            None
-                        }
-                    }
-                }
-            }
+            Some(thumbnail_name.to_owned())
         } else {
             None
         };
@@ -1027,7 +1158,7 @@ async fn get_context(state: Arc<AppState2>, request_file: &MyFile2) -> Result<Te
                     .strip_prefix(&state.config.file_dir)?
                     .display()
             ),
-            thumbnail_data,
+            thumbnail_name,
         });
     }
 
