@@ -25,10 +25,14 @@ a:hover {
   flex-basis: 100%;
 }
 
+#searchouter {
+  display: flex;
+  flex-direction: column;
+}
 #searchboxdiv {
+  flex-grow: 1;
   display: flex;
   column-gap: 0.5em;
-  padding-bottom: 1em;
 }
 #searchbox {
   flex-grow: 1;
@@ -36,14 +40,21 @@ a:hover {
 #caseSensitiveLabel {
   user-select: none;
 }
+.warning {
+  padding-left: 0.5em;
+  padding-top: 0.5em;
+}
 
 #logoThing {
   opacity: 50%;
 }
 
 .filetable {
-  display: grid;
-  grid-template-columns: 1fr;
+  padding-top: 1em;
+}
+
+#noresults {
+  padding-top: 0.5em;
 }
 
 .row {

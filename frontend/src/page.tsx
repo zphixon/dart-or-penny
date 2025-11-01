@@ -111,60 +111,75 @@ function PageItemList({ items, pathSep, fileDir, itemsInSubdirs, pageRoot }: Pag
     }
   };
 
+  let regexWarning = <></>;
+  let reg = undefined;
+  try {
+    let flags = caseSensitive ? "" : "i";
+    reg = new RegExp(searchInput, flags);
+  } catch (e) {
+    regexWarning = <div className="warning">invalid regex: {e instanceof Error ? e.message : "unknown"}</div>;
+  }
+
   let searchWidget = (
-    <div id="searchboxdiv">
-      <button
-        id="clearSearch"
-        onClick={(_) => {
-          setSearchInput("");
-          setCaseSensitive(false);
-          clearSearchEverywhere();
-        }}
-      >
-        clear search
-      </button>
+    <div id="searchouter">
+      <div id="searchboxdiv">
+        <button
+          id="clearSearch"
+          onClick={(_) => {
+            setSearchInput("");
+            setCaseSensitive(false);
+            clearSearchEverywhere();
+          }}
+        >
+          clear search
+        </button>
 
-      <input
-        id="searchbox"
-        ref={searchbox}
-        type="text"
-        placeholder="🔎 search"
-        value={searchInput}
-        onChange={(e) => {
-          let newSearchInput = e.target.value;
-          setSearchInput(newSearchInput);
-        }}
-        onKeyDown={(e) => {
-          if (((!isSearchingEverywhere && e.shiftKey) || isSearchingEverywhere) && e.key === "Enter") {
-            doSearchEverywhere();
-          }
-          if (e.key === "Escape") {
-            e.stopPropagation();
-            searchbox.current?.blur();
-          }
-        }}
-      />
-
-      <label id="caseSensitiveLabel" htmlFor="caseSensitive">
-        case sensitive?
         <input
-          id="caseSensitive"
-          type="checkbox"
-          checked={caseSensitive}
-          onChange={(e) => setCaseSensitive(e.target.checked)}
+          id="searchbox"
+          ref={searchbox}
+          type="text"
+          placeholder="🔎 search"
+          value={searchInput}
+          onChange={(e) => {
+            let newSearchInput = e.target.value;
+            setSearchInput(newSearchInput);
+          }}
+          onKeyDown={(e) => {
+            if (((!isSearchingEverywhere && e.shiftKey) || isSearchingEverywhere) && e.key === "Enter") {
+              doSearchEverywhere();
+            }
+            if (e.key === "Escape") {
+              // if no results, clear?
+              e.stopPropagation();
+              searchbox.current?.blur();
+            }
+          }}
         />
-      </label>
 
-      <button id="searchEverywhere" disabled={searchInput === ""} onClick={(_) => doSearchEverywhere()}>
-        {isSearchingEverywhere ? "🛰️ searching everywhere" : "search everywhere"}
-      </button>
+        <label id="caseSensitiveLabel" htmlFor="caseSensitive">
+          case sensitive?
+          <input
+            id="caseSensitive"
+            type="checkbox"
+            checked={caseSensitive}
+            onChange={(e) => setCaseSensitive(e.target.checked)}
+          />
+        </label>
+
+        <button id="searchEverywhere" disabled={searchInput === ""} onClick={(_) => doSearchEverywhere()}>
+          {isSearchingEverywhere ? "🛰️ searching everywhere" : "search everywhere"}
+        </button>
+      </div>
+
+      {regexWarning}
     </div>
   );
 
-  let noResults = <div className="centerme">no results {isSearchingEverywhere ? "anywhere 🛰️" : ""}</div>;
+  let noResultsText = "no results" + (isSearchingEverywhere ? " anywhere 🛰️" : "");
   if (items.length === 0) {
-    noResults = <div className="centerme">nothing here</div>;
+    noResultsText = "nothing here";
   }
+  let noResults = <div id="noresults" className="centerme">{noResultsText}</div>;
 
   let [sortCol, setSortCol] = useState<SortCol>("filename");
   let [sortOrder, setSortOrder] = useState<SortOrder>("dirsFirst");
@@ -208,9 +223,8 @@ function PageItemList({ items, pathSep, fileDir, itemsInSubdirs, pageRoot }: Pag
   }
 
   let filteredItems = doSort(items);
-  if (searchInput !== "") {
-    let flags = caseSensitive ? "" : "i";
-    filteredItems = filteredItems.filter((item) => item.filename.search(new RegExp(searchInput, flags)) >= 0);
+  if (searchInput !== "" && reg !== undefined) {
+    filteredItems = filteredItems.filter((item) => item.filename.search(reg) >= 0);
   }
 
   let headers: SortCol[] = ["filename", "created", "modified", "accessed"];
@@ -251,7 +265,7 @@ function PageItemList({ items, pathSep, fileDir, itemsInSubdirs, pageRoot }: Pag
         </div>
       );
     } else if (searchError !== undefined) {
-      results = <>{searchError}</>;
+      results = <div className="warning">{searchError}</div>;
     } else if (searchResults.length === 0) {
       results = noResults;
     } else {
@@ -297,14 +311,15 @@ function PageItemList({ items, pathSep, fileDir, itemsInSubdirs, pageRoot }: Pag
     <>
       {searchWidget}
 
-      <div className="header row">
-        <div className="header" id="topleft"></div>
-        {headerCols}
+      <div className="filetable">
+        <div className="header row">
+          <div className="header" id="topleft"></div>
+          {headerCols}
+        </div>
+        {filteredItems.map((item) => (
+          <PageItemListRow key={item.basename} item={item} pageRoot={pageRoot} />
+        ))}
       </div>
-
-      {filteredItems.map((item) => (
-        <PageItemListRow key={item.basename} item={item} pageRoot={pageRoot} />
-      ))}
 
       <div id="numfiles">
         {searchInput !== "" ? <>{filteredItems.length} of</> : ""}
