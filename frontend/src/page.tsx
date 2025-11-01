@@ -189,41 +189,6 @@ function PageItemList({ items, pathSep, fileDir, itemsInSubdirs, pageRoot, csrf 
     </div>
   );
 
-  if (isSearchingEverywhere) {
-    return (
-      <>
-        {searchWidget}
-
-        {searchResults.length === 0 ? noResults : ""}
-
-        {searchResults.map((result, i) => {
-          let parts = result.split(pathSep);
-
-          let href = pageRoot;
-          let as = [<a href={href}>{fileDir}</a>];
-          for (let part of parts) {
-            href += "/" + part;
-            as.push(<a href={href}>{part}</a>);
-          }
-
-          let combined = as.reduce((resultLinks, a) => (
-            <>
-              {resultLinks} {pathSep} {a}
-            </>
-          ));
-
-          return (
-            <div key={i} className="everywheresearch">
-              {combined}
-            </div>
-          );
-        })}
-
-        {logoThing}
-      </>
-    );
-  }
-
   function doSort(oldItems: types.PageItem[]): types.PageItem[] {
     if (sortOrder === "dirsFirst") {
       return items;
@@ -304,6 +269,41 @@ function PageItemList({ items, pathSep, fileDir, itemsInSubdirs, pageRoot, csrf 
 
     return () => socket.close();
   }, []);
+
+  if (isSearchingEverywhere) {
+    return (
+      <>
+        {searchWidget}
+
+        {searchResults.length === 0 ? noResults : ""}
+
+        {searchResults.map((result, i) => {
+          let parts = result.split(pathSep);
+
+          let href = pageRoot;
+          let as = [<a href={href}>{fileDir}</a>];
+          for (let part of parts) {
+            href += "/" + part;
+            as.push(<a href={href}>{part}</a>);
+          }
+
+          let combined = as.reduce((resultLinks, a) => (
+            <>
+              {resultLinks} {pathSep} {a}
+            </>
+          ));
+
+          return (
+            <div key={i} className="everywheresearch">
+              {combined}
+            </div>
+          );
+        })}
+
+        {logoThing}
+      </>
+    );
+  }
 
   return (
     <>
