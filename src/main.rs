@@ -1,8 +1,6 @@
 use axum::{
     Json, Router,
-    extract::{
-        Query, Request, State
-    },
+    extract::{Query, Request, State},
     http::{StatusCode, Uri, header},
     middleware::Next,
     response::{Html, IntoResponse, Response},

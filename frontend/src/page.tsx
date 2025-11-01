@@ -179,7 +179,11 @@ function PageItemList({ items, pathSep, fileDir, itemsInSubdirs, pageRoot }: Pag
   if (items.length === 0) {
     noResultsText = "nothing here";
   }
-  let noResults = <div id="noresults" className="centerme">{noResultsText}</div>;
+  let noResults = (
+    <div id="noresults" className="centerme">
+      {noResultsText}
+    </div>
+  );
 
   let [sortCol, setSortCol] = useState<SortCol>("filename");
   let [sortOrder, setSortOrder] = useState<SortOrder>("dirsFirst");
