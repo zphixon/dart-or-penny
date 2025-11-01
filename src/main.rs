@@ -742,14 +742,19 @@ async fn thumbnail_handler(
         return (StatusCode::NOT_FOUND, "thumbnail broken").into_response();
     }
 
+    let headers = [
+        ("Content-Type", "image/webp"),
+        ("Cache-Control", "max-age=31536000, immutable"),
+    ];
+
     if let Some(data) = state.thumbnail_name_data.get(&name).await {
-        return ([("Content-Type", "image/webp")], data).into_response();
+        return (headers, data).into_response();
     };
 
     match tokio::fs::read(state.config.thumbnail_dir.join(&name)).await {
         Ok(data) => {
             state.thumbnail_name_data.insert(name, data.clone()).await;
-            ([("Content-Type", "image/webp")], data).into_response()
+            (headers, data).into_response()
         }
         Err(_) => (StatusCode::NOT_FOUND, "couldn't read thumbnail").into_response(),
     }
