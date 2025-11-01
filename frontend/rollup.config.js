@@ -5,7 +5,6 @@ import path from 'node:path';
 import typescript from '@rollup/plugin-typescript';
 import commonjs from '@rollup/plugin-commonjs';
 import replace from '@rollup/plugin-replace';
-import image from '@rollup/plugin-image';
 
 function doGlob(pattern) {
   return globSync(pattern).map(file => [
@@ -35,7 +34,6 @@ export default {
       include: /node_modules/,
       requireReturnsDefault: 'auto',
     }),
-    image(),
     typescript(),
   ],
   jsx: "react-jsx",
