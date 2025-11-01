@@ -129,12 +129,6 @@ function PageItemList({ items, pathSep, fileDir, itemsInSubdirs, pageRoot }: Pag
     noResults = <div className="centerme">nothing here</div>;
   }
 
-  let logoThing = (
-    <div className="centerme">
-      <img id="logoThing" src={pageRoot + "/.dop/assets/apple-touch-icon.png"} />
-    </div>
-  );
-
   function doSort(oldItems: types.PageItem[]): types.PageItem[] {
     if (sortOrder === "dirsFirst") {
       return items;
@@ -227,8 +221,6 @@ function PageItemList({ items, pathSep, fileDir, itemsInSubdirs, pageRoot }: Pag
             </div>
           );
         })}
-
-        {logoThing}
       </>
     );
   }
@@ -253,8 +245,6 @@ function PageItemList({ items, pathSep, fileDir, itemsInSubdirs, pageRoot }: Pag
       </div>
 
       {filteredItems.length === 0 ? noResults : ""}
-
-      {logoThing}
     </>
   );
 }
