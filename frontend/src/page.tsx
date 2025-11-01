@@ -1,6 +1,6 @@
 import { createRoot } from "react-dom/client";
 import * as types from "./bindings/index";
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 
 interface PageItemListRowProps {
   pageRoot: string;
@@ -44,6 +44,7 @@ interface PageItemListProps {
   pageRoot: string;
 }
 function PageItemList({ items, pathSep, fileDir, itemsInSubdirs, pageRoot }: PageItemListProps) {
+  let searchbox = useRef<HTMLInputElement | null>(null);
   let [isSearchingEverywhere, setIsSearchingEverywhere] = useState(false);
   let [searchResults, setSearchResults] = useState<string[]>([]);
   let [caseSensitive, setCaseSensitive] = useState(false);
@@ -63,6 +64,13 @@ function PageItemList({ items, pathSep, fileDir, itemsInSubdirs, pageRoot }: Pag
       .then(setSearchResults);
   }, [searchInput, caseSensitive]);
 
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "s" && document.activeElement?.id !== searchbox.current?.id) {
+      e.preventDefault();
+      searchbox.current?.focus();
+    }
+  });
+
   let searchWidget = (
     <div id="searchboxdiv">
       <button
@@ -79,6 +87,7 @@ function PageItemList({ items, pathSep, fileDir, itemsInSubdirs, pageRoot }: Pag
 
       <input
         id="searchbox"
+        ref={searchbox}
         type="text"
         placeholder="🔎 search"
         value={searchInput}
@@ -97,6 +106,7 @@ function PageItemList({ items, pathSep, fileDir, itemsInSubdirs, pageRoot }: Pag
           if (e.key === "Escape") {
             setSearchInput("");
             setIsSearchingEverywhere(false);
+            searchbox.current?.blur();
           }
         }}
       />
