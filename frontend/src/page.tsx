@@ -45,12 +45,21 @@ interface PageItemListProps {
 }
 function PageItemList({ items, pathSep, fileDir, itemsInSubdirs, pageRoot }: PageItemListProps) {
   let searchbox = useRef<HTMLInputElement | null>(null);
-  let [isSearchingEverywhere, setIsSearchingEverywhere] = useState(false);
-  let [searchResults, setSearchResults] = useState<string[]>([]);
-  let [caseSensitive, setCaseSensitive] = useState(false);
   let [searchInput, setSearchInput] = useState("");
-  let [sortCol, setSortCol] = useState<SortCol>("filename");
-  let [sortOrder, setSortOrder] = useState<SortOrder>("dirsFirst");
+  let [caseSensitive, setCaseSensitive] = useState(false);
+
+  // TODO move to new component?
+  let [isSearchingEverywhere, setIsSearchingEverywhere] = useState(false);
+  let [searchResultsLoading, setSearchResultsLoading] = useState(false);
+  let [searchError, setSearchError] = useState<string | undefined>();
+  let [searchResults, setSearchResults] = useState<string[]>([]);
+  function clearSearchEverywhere() {
+    setIsSearchingEverywhere(false);
+    setSearchResultsLoading(false);
+    setSearchError(undefined);
+    setSearchResults([]);
+  }
+
   let doSearchEverywhere = useCallback(() => {
     let path =
       pageRoot +
@@ -59,17 +68,48 @@ function PageItemList({ items, pathSep, fileDir, itemsInSubdirs, pageRoot }: Pag
       "&" +
       (caseSensitive ? "case_insensitive=false" : "case_sensitive=true");
 
+    setSearchResults([]);
+    setSearchResultsLoading(true);
+    setIsSearchingEverywhere(true);
     fetch(path)
-      .then((response) => response.json())
-      .then(setSearchResults);
+      .then((response) => {
+        setSearchResultsLoading(false);
+        if (response.ok) {
+          response
+            .json()
+            .then((results) => {
+              setSearchResults(results);
+              setSearchError(undefined);
+            })
+            .catch((_) => {
+              setSearchResults([]);
+              setSearchError("invalid JSON from server");
+            });
+        } else {
+          setSearchResults([]);
+          response
+            .text()
+            .then(setSearchError)
+            .catch((_) => setSearchError("couldn't read response body"));
+        }
+      })
+      .catch((e) => {
+        setSearchResultsLoading(false);
+        setSearchResults([]);
+        setSearchError("couldn't search: " + (e instanceof Error ? e.message : "unknown error"));
+      });
   }, [searchInput, caseSensitive]);
 
-  document.addEventListener("keydown", (e) => {
+  document.onkeydown = (e) => {
     if (e.key === "s" && document.activeElement?.id !== searchbox.current?.id) {
       e.preventDefault();
       searchbox.current?.focus();
     }
-  });
+    if (e.key === "Escape") {
+      setSearchInput("");
+      clearSearchEverywhere();
+    }
+  };
 
   let searchWidget = (
     <div id="searchboxdiv">
@@ -77,9 +117,8 @@ function PageItemList({ items, pathSep, fileDir, itemsInSubdirs, pageRoot }: Pag
         id="clearSearch"
         onClick={(_) => {
           setSearchInput("");
-          setIsSearchingEverywhere(false);
-          setSearchResults([]);
           setCaseSensitive(false);
+          clearSearchEverywhere();
         }}
       >
         clear search
@@ -94,18 +133,13 @@ function PageItemList({ items, pathSep, fileDir, itemsInSubdirs, pageRoot }: Pag
         onChange={(e) => {
           let newSearchInput = e.target.value;
           setSearchInput(newSearchInput);
-          if (newSearchInput === "") {
-            setIsSearchingEverywhere(false);
-          }
         }}
         onKeyDown={(e) => {
           if (((!isSearchingEverywhere && e.shiftKey) || isSearchingEverywhere) && e.key === "Enter") {
-            setIsSearchingEverywhere(true);
             doSearchEverywhere();
           }
           if (e.key === "Escape") {
-            setSearchInput("");
-            setIsSearchingEverywhere(false);
+            e.stopPropagation();
             searchbox.current?.blur();
           }
         }}
@@ -121,14 +155,7 @@ function PageItemList({ items, pathSep, fileDir, itemsInSubdirs, pageRoot }: Pag
         />
       </label>
 
-      <button
-        id="searchEverywhere"
-        disabled={searchInput === ""}
-        onClick={(_) => {
-          setIsSearchingEverywhere(true);
-          doSearchEverywhere();
-        }}
-      >
+      <button id="searchEverywhere" disabled={searchInput === ""} onClick={(_) => doSearchEverywhere()}>
         {isSearchingEverywhere ? "🛰️ searching everywhere" : "search everywhere"}
       </button>
     </div>
@@ -138,6 +165,9 @@ function PageItemList({ items, pathSep, fileDir, itemsInSubdirs, pageRoot }: Pag
   if (items.length === 0) {
     noResults = <div className="centerme">nothing here</div>;
   }
+
+  let [sortCol, setSortCol] = useState<SortCol>("filename");
+  let [sortOrder, setSortOrder] = useState<SortOrder>("dirsFirst");
 
   function doSort(oldItems: types.PageItem[]): types.PageItem[] {
     if (sortOrder === "dirsFirst") {
@@ -163,6 +193,7 @@ function PageItemList({ items, pathSep, fileDir, itemsInSubdirs, pageRoot }: Pag
     console.error("unexpected value for orderBy", sortOrder);
     return [];
   }
+
   function nextSortOrder(sortCol: SortCol, sortOrder: SortOrder): SortOrder {
     if (sortCol === "filename") {
       if (sortOrder === "dirsFirst") return "asc";
@@ -200,40 +231,67 @@ function PageItemList({ items, pathSep, fileDir, itemsInSubdirs, pageRoot }: Pag
     </div>
   ));
 
-  let numDirs = items.filter((item) => item.kind === "Dir").length;
-
   if (isSearchingEverywhere) {
+    let results;
+    if (searchResultsLoading) {
+      results = (
+        <div className="centerme">
+          <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <style>
+              .spinner_P7sC{"{"}transform-origin:center;animation:spinner_svv2 .75s infinite linear{"}"}
+              @keyframes spinner_svv2{"{"}100%{"{"}
+              transform:rotate(360deg){"}"}
+              {"}"}
+            </style>
+            <path
+              d="M10.14,1.16a11,11,0,0,0-9,8.92A1.59,1.59,0,0,0,2.46,12,1.52,1.52,0,0,0,4.11,10.7a8,8,0,0,1,6.66-6.61A1.42,1.42,0,0,0,12,2.69h0A1.57,1.57,0,0,0,10.14,1.16Z"
+              className="spinner_P7sC"
+            />
+          </svg>
+        </div>
+      );
+    } else if (searchError !== undefined) {
+      results = <>{searchError}</>;
+    } else if (searchResults.length === 0) {
+      results = noResults;
+    } else {
+      results = (
+        <>
+          {searchResults.map((result, i) => {
+            let parts = result.split(pathSep);
+
+            let href = pageRoot;
+            let as = [<a href={href}>{fileDir}</a>];
+            for (let part of parts) {
+              href += "/" + part;
+              as.push(<a href={href}>{part}</a>);
+            }
+
+            let combined = as.reduce((resultLinks, a) => (
+              <>
+                {resultLinks} {pathSep} {a}
+              </>
+            ));
+
+            return (
+              <div key={i} className="everywheresearch">
+                {combined}
+              </div>
+            );
+          })}
+        </>
+      );
+    }
+
     return (
       <>
         {searchWidget}
-
-        {searchResults.length === 0 ? noResults : ""}
-
-        {searchResults.map((result, i) => {
-          let parts = result.split(pathSep);
-
-          let href = pageRoot;
-          let as = [<a href={href}>{fileDir}</a>];
-          for (let part of parts) {
-            href += "/" + part;
-            as.push(<a href={href}>{part}</a>);
-          }
-
-          let combined = as.reduce((resultLinks, a) => (
-            <>
-              {resultLinks} {pathSep} {a}
-            </>
-          ));
-
-          return (
-            <div key={i} className="everywheresearch">
-              {combined}
-            </div>
-          );
-        })}
+        {results}
       </>
     );
   }
+
+  let numDirs = items.filter((item) => item.kind === "Dir").length;
 
   return (
     <>
