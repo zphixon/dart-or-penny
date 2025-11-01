@@ -52,7 +52,7 @@ function PageItemList({ items, pathSep, fileDir, itemsInSubdirs, pageRoot }: Pag
   let [isSearchingEverywhere, setIsSearchingEverywhere] = useState(false);
   let [searchResultsLoading, setSearchResultsLoading] = useState(false);
   let [searchError, setSearchError] = useState<string | undefined>();
-  let [searchResults, setSearchResults] = useState<string[]>([]);
+  let [searchResults, setSearchResults] = useState<types.SearchResult[]>([]);
   function clearSearchEverywhere() {
     setIsSearchingEverywhere(false);
     setSearchResultsLoading(false);
@@ -276,14 +276,24 @@ function PageItemList({ items, pathSep, fileDir, itemsInSubdirs, pageRoot }: Pag
       results = (
         <>
           {searchResults.map((result, i) => {
-            let parts = result.split(pathSep);
+            let parts = result.path.split(pathSep);
 
             let href = pageRoot;
             let as = [<a href={href}>{fileDir}</a>];
-            for (let part of parts) {
+            parts.forEach((part, i) => {
               href += "/" + part;
-              as.push(<a href={href}>{part}</a>);
-            }
+
+              let target = undefined;
+              if (i + 1 === parts.length && result.kind === "File") {
+                target = "_blank"
+              }
+
+              as.push(
+                <a href={href} target={target}>
+                  {part}
+                </a>,
+              );
+            });
 
             let combined = as.reduce((resultLinks, a) => (
               <>
@@ -291,9 +301,10 @@ function PageItemList({ items, pathSep, fileDir, itemsInSubdirs, pageRoot }: Pag
               </>
             ));
 
+            let icon = result.kind === "Dir" ? <>📁</> : <>📃</>;
             return (
               <div key={i} className="everywheresearch">
-                {combined}
+                {icon} {combined}
               </div>
             );
           })}

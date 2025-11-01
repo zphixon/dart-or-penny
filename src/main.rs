@@ -699,6 +699,32 @@ struct Search {
     case_insensitive: Option<bool>,
 }
 
+#[derive(Serialize, PartialEq, Eq, ts_rs::TS)]
+#[ts(export)]
+struct SearchResult {
+    path: String,
+    kind: ItemKind,
+}
+
+impl PartialOrd for SearchResult {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.path.partial_cmp(&other.path)
+    }
+}
+
+impl Ord for SearchResult {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.path.cmp(&other.path)
+    }
+}
+
+#[derive(Serialize, PartialEq, Eq, ts_rs::TS)]
+#[ts(export)]
+enum ItemKind {
+    File,
+    Dir,
+}
+
 async fn search_handler(
     State(state): State<Arc<AppState2>>,
     Query(search): Query<Search>,
@@ -716,7 +742,7 @@ async fn search_handler(
     .into_response())
 }
 
-fn file_list_matching(state: Arc<AppState2>, include: impl Fn(&Path) -> bool) -> Vec<String> {
+fn file_list_matching(state: Arc<AppState2>, include: impl Fn(&Path) -> bool) -> Vec<SearchResult> {
     let mut results = Vec::new();
     for file in state.files.iter() {
         let Ok(test) = file.full_path.strip_prefix(&state.config.file_dir) else {
@@ -727,7 +753,14 @@ fn file_list_matching(state: Arc<AppState2>, include: impl Fn(&Path) -> bool) ->
             continue;
         };
         if include(test) {
-            results.push(test.display().to_string());
+            results.push(SearchResult {
+                path: test.display().to_string(),
+                kind: if file.metadata.is_dir() {
+                    ItemKind::Dir
+                } else {
+                    ItemKind::File
+                },
+            });
         }
     }
     results.sort();
