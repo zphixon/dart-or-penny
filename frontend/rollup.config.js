@@ -5,6 +5,7 @@ import path from 'node:path';
 import typescript from '@rollup/plugin-typescript';
 import commonjs from '@rollup/plugin-commonjs';
 import replace from '@rollup/plugin-replace';
+import terser from '@rollup/plugin-terser';
 
 function doGlob(pattern) {
   return globSync(pattern).map(file => [
@@ -35,6 +36,7 @@ export default {
       requireReturnsDefault: 'auto',
     }),
     typescript(),
+    terser(),
   ],
   jsx: "react-jsx",
 };
